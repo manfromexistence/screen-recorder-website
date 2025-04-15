@@ -2,7 +2,19 @@
 
 import { Button } from "@/components/ui/button";
 import { useState, useRef, useEffect } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { Slider } from "@/components/ui/slider";
+import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
+
+// Define available resolutions
+const resolutions = [
+  { label: "4K (3840x2160)", width: 3840, height: 2160 },
+  { label: "1080p (1920x1080)", width: 1920, height: 1080 },
+  { label: "720p (1280x720)", width: 1280, height: 720 },
+  { label: "480p (854x480)", width: 854, height: 480 },
+];
 
 export default function Home() {
   const [recording, setRecording] = useState(false);
@@ -11,7 +23,9 @@ export default function Home() {
   const recordedChunks = useRef<Blob[]>([]);
   const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState(true);
   const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
-
+  const [selectedResolution, setSelectedResolution] = useState(resolutions[1]); // Default to 1080p
+  const [frameRate, setFrameRate] = useState(60);
+  const { toast } = useToast();
 
   useEffect(() => {
     const checkDisplayMediaPermission = async () => {
@@ -22,17 +36,26 @@ export default function Home() {
       } catch (error) {
         console.error("Display media permission check failed:", error);
         setHasDisplayMediaPermission(false);
+        toast({
+          variant: "destructive",
+          title: "Screen Recording Permissions Required",
+          description: "Please allow screen recording permissions in your browser settings to use this feature.",
+        });
       }
     };
 
     checkDisplayMediaPermission();
-  }, []);
+  }, [toast]);
 
 
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: "window", frameRate: 60 },
+        video: {
+          width: selectedResolution.width,
+          height: selectedResolution.height,
+          frameRate: frameRate,
+        },
         audio: true,
       });
 
@@ -63,16 +86,21 @@ export default function Home() {
       setRecording(true);
     } catch (error) {
       console.error("Error starting recording:", error);
+      toast({
+        variant: "destructive",
+        title: "Error Starting Recording",
+        description: "There was an issue starting the recording. Please check your permissions and try again.",
+      });
     }
   };
 
   const stopRecording = () => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
-        mediaRecorder.current.stop();
-        setRecording(false);
+      mediaRecorder.current.stop();
+      setRecording(false);
 
-        // Stop all tracks on the stream
-        streamRef.current?.getTracks().forEach(track => track.stop());
+      // Stop all tracks on the stream
+      streamRef.current?.getTracks().forEach(track => track.stop());
     }
   };
 
@@ -80,14 +108,40 @@ export default function Home() {
     <div className="flex flex-col items-center justify-center min-h-screen p-4">
       <h1 className="text-2xl font-semibold mb-4">Resolution Recorder</h1>
 
-      { !hasDisplayMediaPermission && (
-        <Alert variant="destructive">
-          <AlertTitle>Screen Recording Permissions Required</AlertTitle>
-          <AlertDescription>
-            Please allow screen recording permissions in your browser settings to use this feature.
-          </AlertDescription>
-        </Alert>
-      )}
+      <div className="flex flex-col space-y-2 mb-4 w-full max-w-md">
+        <Label htmlFor="resolution">Resolution</Label>
+        <Select onValueChange={(value) => {
+          const res = resolutions.find((r) => r.label === value);
+          if (res) {
+            setSelectedResolution(res);
+          }
+        }}>
+          <SelectTrigger id="resolution">
+            <SelectValue placeholder={selectedResolution.label} />
+          </SelectTrigger>
+          <SelectContent>
+            {resolutions.map((resolution) => (
+              <SelectItem key={resolution.label} value={resolution.label}>
+                {resolution.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="flex flex-col space-y-2 mb-4 w-full max-w-md">
+        <Label htmlFor="frameRate">Frame Rate ({frameRate} fps)</Label>
+        <Slider
+          id="frameRate"
+          defaultValue={[frameRate]}
+          max={60}
+          min={15}
+          step={1}
+          onValueChange={(value) => setFrameRate(value[0])}
+        />
+        <p className="text-sm text-muted-foreground">Adjust the video frame rate. Higher frame rates may require more processing power.</p>
+      </div>
+
 
       <div className="flex space-x-4 mb-4">
         {!recording ? (
