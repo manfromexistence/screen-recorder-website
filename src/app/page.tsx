@@ -39,7 +39,7 @@ export default function Home() {
       streamRef.current = stream; // Store the stream in the ref
 
       mediaRecorder.current = new MediaRecorder(stream, {
-        mimeType: "video/webm;codecs=vp9",
+        mimeType: "video/webm;codecs=vp8,opus",
       });
 
       recordedChunks.current = []; // Clear existing chunks
