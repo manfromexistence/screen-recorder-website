@@ -10,6 +10,8 @@ export default function Home() {
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
   const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState(true);
+  const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
+
 
   useEffect(() => {
     const checkDisplayMediaPermission = async () => {
@@ -34,9 +36,13 @@ export default function Home() {
         audio: true,
       });
 
+      streamRef.current = stream; // Store the stream in the ref
+
       mediaRecorder.current = new MediaRecorder(stream, {
         mimeType: "video/webm;codecs=vp9",
       });
+
+      recordedChunks.current = []; // Clear existing chunks
 
       mediaRecorder.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -61,9 +67,12 @@ export default function Home() {
   };
 
   const stopRecording = () => {
-    if (mediaRecorder.current) {
-      mediaRecorder.current.stop();
-      setRecording(false);
+    if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
+        mediaRecorder.current.stop();
+        setRecording(false);
+
+        // Stop all tracks on the stream
+        streamRef.current?.getTracks().forEach(track => track.stop());
     }
   };
 
