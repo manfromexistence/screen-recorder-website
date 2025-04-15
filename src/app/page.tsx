@@ -37,55 +37,78 @@ export default function Home() {
 
 
   useEffect(() => {
+    let isMounted = true; // Track if the component is mounted
+
     const checkDisplayMediaPermission = async () => {
       try {
         // Check if the Permissions API is available
         if (navigator.permissions && navigator.permissions.query) {
           const permissionStatus = await navigator.permissions.query({ name: 'display-capture' });
           if (permissionStatus.state === 'granted') {
-            setHasDisplayMediaPermission(true);
+            if (isMounted) {
+              setHasDisplayMediaPermission(true);
+            }
             return;
           } else {
              // If Permissions API is not available or permission is not granted, try to request it directly
              try{
               await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
-              setHasDisplayMediaPermission(true);
+              if (isMounted) {
+                  setHasDisplayMediaPermission(true);
+              }
             } catch(e){
               console.error("Display media permission check failed:", e);
-              setHasDisplayMediaPermission(false);
-              sonner("Screen Recording Permissions Required", {
-                description: "Please allow screen recording permissions in your browser settings to use this feature.",
-                duration: 5000,
-              });
+                if (isMounted) {
+                  setHasDisplayMediaPermission(false);
+                  sonner("Screen Recording Permissions Required", {
+                    description: "Please allow screen recording permissions in your browser settings to use this feature.",
+                    duration: 5000,
+                  });
+                }
             }
           }
         } else {
             // If Permissions API is not available or permission is not granted, try to request it directly
             try{
               await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
-              setHasDisplayMediaPermission(true);
+              if (isMounted) {
+                setHasDisplayMediaPermission(true);
+              }
             } catch(e){
               console.error("Display media permission check failed:", e);
-              setHasDisplayMediaPermission(false);
-              sonner("Screen Recording Permissions Required", {
-                description: "Please allow screen recording permissions in your browser settings to use this feature.",
-                duration: 5000,
-              });
+              if (isMounted) {
+                setHasDisplayMediaPermission(false);
+                 sonner("Screen Recording Permissions Required", {
+                  description: "Please allow screen recording permissions in your browser settings to use this feature.",
+                  duration: 5000,
+                });
+              }
             }
         }
 
 
       } catch (error) {
         console.error("Display media permission check failed:", error);
-        setHasDisplayMediaPermission(false);
-        sonner("Screen Recording Permissions Required", {
-          description: "Please allow screen recording permissions in your browser settings to use this feature.",
-          duration: 5000,
-        });
+        if (isMounted) {
+           setHasDisplayMediaPermission(false);
+            sonner("Screen Recording Permissions Required", {
+              description: "Please allow screen recording permissions in your browser settings to use this feature.",
+              duration: 5000,
+            });
+        }
+
       }
     };
 
-    checkDisplayMediaPermission();
+    // Call checkDisplayMediaPermission only when component is mounted
+    if (isMounted) {
+      checkDisplayMediaPermission();
+    }
+
+    // Cleanup function to prevent setting state on unmounted component
+    return () => {
+      isMounted = false;
+    };
   }, [sonner]);
 
 
@@ -131,7 +154,7 @@ export default function Home() {
       setRecording(true);
     } catch (error) {
       console.error("Error starting recording:", error);
-      sonner("Error Starting Recording", {
+       sonner("Error Starting Recording", {
         description: "There was an issue starting the recording. Please check your permissions and try again.",
         duration: 5000,
       });
