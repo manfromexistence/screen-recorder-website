@@ -7,14 +7,19 @@ import { useToast } from "@/hooks/use-toast";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { useDisclosure } from '@mantine/hooks';
+
 
 // Define available resolutions
 const resolutions = [
+  { label: "8K (7680x4320)", width: 7680, height: 4320 },
   { label: "4K (3840x2160)", width: 3840, height: 2160 },
   { label: "1080p (1920x1080)", width: 1920, height: 1080 },
   { label: "720p (1280x720)", width: 1280, height: 720 },
   { label: "480p (854x480)", width: 854, height: 480 },
 ];
+
+const availableFrameRates = [30, 60];
 
 export default function Home() {
   const [recording, setRecording] = useState(false);
@@ -31,7 +36,7 @@ export default function Home() {
     const checkDisplayMediaPermission = async () => {
       try {
         // This might throw an error if the feature is disallowed by the permissions policy
-        await navigator.mediaDevices.getDisplayMedia({ video: true });
+        await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
         setHasDisplayMediaPermission(true);
       } catch (error) {
         console.error("Display media permission check failed:", error);
@@ -61,8 +66,10 @@ export default function Home() {
 
       streamRef.current = stream; // Store the stream in the ref
 
+      const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9') ? 'video/webm; codecs=vp9' : 'video/webm';
+
       mediaRecorder.current = new MediaRecorder(stream, {
-        mimeType: "video/webm;codecs=vp8,opus",
+        mimeType: mimeType,
       });
 
       recordedChunks.current = []; // Clear existing chunks
@@ -73,9 +80,9 @@ export default function Home() {
         }
       };
 
-      mediaRecorder.current.onstop = () => {
+      mediaRecorder.current.onstop = async () => {
         const blob = new Blob(recordedChunks.current, {
-          type: "video/webm",
+          type: mimeType,
         });
         const url = URL.createObjectURL(blob);
         setVideoURL(url);
@@ -131,14 +138,20 @@ export default function Home() {
 
       <div className="flex flex-col space-y-2 mb-4 w-full max-w-md">
         <Label htmlFor="frameRate">Frame Rate ({frameRate} fps)</Label>
-        <Slider
-          id="frameRate"
-          defaultValue={[frameRate]}
-          max={60}
-          min={15}
-          step={1}
-          onValueChange={(value) => setFrameRate(value[0])}
-        />
+          <Select onValueChange={(value) => {
+            setFrameRate(parseInt(value));
+          }}>
+            <SelectTrigger id="frameRate">
+              <SelectValue placeholder={`${frameRate} fps`} />
+            </SelectTrigger>
+            <SelectContent>
+              {availableFrameRates.map((rate) => (
+                <SelectItem key={rate} value={rate.toString()}>
+                  {rate} fps
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         <p className="text-sm text-muted-foreground">Adjust the video frame rate. Higher frame rates may require more processing power.</p>
       </div>
 
