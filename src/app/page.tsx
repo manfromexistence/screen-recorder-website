@@ -14,7 +14,9 @@ import { Toaster } from 'sonner';
 // Define available resolutions
 const resolutions = [
   { label: "8K (7680x4320)", width: 7680, height: 4320 },
+   { label: "5K (5120x2880)", width: 5120, height: 2880 },
   { label: "4K (3840x2160)", width: 3840, height: 2160 },
+  { label: "1440p (2560x1440)", width: 2560, height: 1440 },
   { label: "1080p (1920x1080)", width: 1920, height: 1080 },
   { label: "720p (1280x720)", width: 1280, height: 720 },
   { label: "480p (854x480)", width: 854, height: 480 },
@@ -30,7 +32,7 @@ export default function Home() {
   const recordedChunks = useRef<Blob[]>([]);
   const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState(true);
   const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
-  const [selectedResolution, setSelectedResolution] = useState(resolutions[1]); // Default to 4K
+  const [selectedResolution, setSelectedResolution] = useState(resolutions[2]); // Default to 4K
   const [frameRate, setFrameRate] = useState(60);
   const { toast } = useToast();
   const { sonner } = useSonner();
