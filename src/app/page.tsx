@@ -1,13 +1,31 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 export default function Home() {
   const [recording, setRecording] = useState(false);
   const [videoURL, setVideoURL] = useState<string | null>(null);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
+  const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState(true);
+
+  useEffect(() => {
+    const checkDisplayMediaPermission = async () => {
+      try {
+        // This might throw an error if the feature is disallowed by the permissions policy
+        await navigator.mediaDevices.getDisplayMedia({ video: true });
+        setHasDisplayMediaPermission(true);
+      } catch (error) {
+        console.error("Display media permission check failed:", error);
+        setHasDisplayMediaPermission(false);
+      }
+    };
+
+    checkDisplayMediaPermission();
+  }, []);
+
 
   const startRecording = async () => {
     try {
@@ -52,9 +70,19 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4">
       <h1 className="text-2xl font-semibold mb-4">Resolution Recorder</h1>
+
+      { !hasDisplayMediaPermission && (
+        <Alert variant="destructive">
+          <AlertTitle>Screen Recording Permissions Required</AlertTitle>
+          <AlertDescription>
+            Please allow screen recording permissions in your browser settings to use this feature.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="flex space-x-4 mb-4">
         {!recording ? (
-          <Button onClick={startRecording} className="bg-primary text-primary-foreground hover:bg-primary/80">
+          <Button onClick={startRecording} className="bg-primary text-primary-foreground hover:bg-primary/80" disabled={!hasDisplayMediaPermission}>
             Start Recording
           </Button>
         ) : (
