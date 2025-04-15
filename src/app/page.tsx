@@ -13,6 +13,7 @@ import { Toaster } from 'sonner';
 
 // Define available resolutions
 const resolutions = [
+  { label: "8K (7680x4320)", width: 7680, height: 4320 },
   { label: "4K (3840x2160)", width: 3840, height: 2160 },
   { label: "1080p (1920x1080)", width: 1920, height: 1080 },
   { label: "720p (1280x720)", width: 1280, height: 720 },
@@ -29,10 +30,10 @@ export default function Home() {
   const recordedChunks = useRef<Blob[]>([]);
   const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState(true);
   const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
-  const [selectedResolution, setSelectedResolution] = useState(resolutions[0]); // Default to 4K
+  const [selectedResolution, setSelectedResolution] = useState(resolutions[1]); // Default to 4K
   const [frameRate, setFrameRate] = useState(60);
   const { toast } = useToast();
-    const {sonner} = useSonner();
+  const { sonner } = useSonner();
 
 
   useEffect(() => {
@@ -44,19 +45,43 @@ export default function Home() {
           if (permissionStatus.state === 'granted') {
             setHasDisplayMediaPermission(true);
             return;
+          } else {
+             // If Permissions API is not available or permission is not granted, try to request it directly
+             try{
+              await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
+              setHasDisplayMediaPermission(true);
+            } catch(e){
+              console.error("Display media permission check failed:", e);
+              setHasDisplayMediaPermission(false);
+              sonner("Screen Recording Permissions Required", {
+                description: "Please allow screen recording permissions in your browser settings to use this feature.",
+                duration: 5000,
+              });
+            }
           }
+        } else {
+            // If Permissions API is not available or permission is not granted, try to request it directly
+            try{
+              await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
+              setHasDisplayMediaPermission(true);
+            } catch(e){
+              console.error("Display media permission check failed:", e);
+              setHasDisplayMediaPermission(false);
+              sonner("Screen Recording Permissions Required", {
+                description: "Please allow screen recording permissions in your browser settings to use this feature.",
+                duration: 5000,
+              });
+            }
         }
 
-        // If Permissions API is not available or permission is not granted, try to request it directly
-        await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
-        setHasDisplayMediaPermission(true);
+
       } catch (error) {
         console.error("Display media permission check failed:", error);
         setHasDisplayMediaPermission(false);
         sonner("Screen Recording Permissions Required", {
-            description: "Please allow screen recording permissions in your browser settings to use this feature.",
-            duration: 5000,
-          });
+          description: "Please allow screen recording permissions in your browser settings to use this feature.",
+          duration: 5000,
+        });
       }
     };
 
@@ -81,8 +106,8 @@ export default function Home() {
 
       mediaRecorder.current = new MediaRecorder(stream, {
         mimeType: mimeType,
-          videoBitsPerSecond: 8000000, // 8 Mbps - You can adjust this
-          audioBitsPerSecond: 128000,   // 128 kbps - You can adjust this
+        videoBitsPerSecond: 8000000, // 8 Mbps - You can adjust this
+        audioBitsPerSecond: 128000,   // 128 kbps - You can adjust this
       });
 
       recordedChunks.current = []; // Clear existing chunks
@@ -106,10 +131,10 @@ export default function Home() {
       setRecording(true);
     } catch (error) {
       console.error("Error starting recording:", error);
-        sonner("Error Starting Recording", {
-            description: "There was an issue starting the recording. Please check your permissions and try again.",
-            duration: 5000,
-          });
+      sonner("Error Starting Recording", {
+        description: "There was an issue starting the recording. Please check your permissions and try again.",
+        duration: 5000,
+      });
     }
   };
 
@@ -125,7 +150,7 @@ export default function Home() {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4">
-      <Toaster/>
+      <Toaster />
       <h1 className="text-2xl font-semibold mb-4">Resolution Recorder</h1>
 
       <div className="flex flex-col space-y-2 mb-4 w-full max-w-md">
@@ -151,20 +176,20 @@ export default function Home() {
 
       <div className="flex flex-col space-y-2 mb-4 w-full max-w-md">
         <Label htmlFor="frameRate">Frame Rate ({frameRate} fps)</Label>
-          <Select onValueChange={(value) => {
-            setFrameRate(parseInt(value));
-          }}>
-            <SelectTrigger id="frameRate">
-              <SelectValue placeholder={`${frameRate} fps`} />
-            </SelectTrigger>
-            <SelectContent>
-              {availableFrameRates.map((rate) => (
-                <SelectItem key={rate} value={rate.toString()}>
-                  {rate} fps
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <Select onValueChange={(value) => {
+          setFrameRate(parseInt(value));
+        }}>
+          <SelectTrigger id="frameRate">
+            <SelectValue placeholder={`${frameRate} fps`} />
+          </SelectTrigger>
+          <SelectContent>
+            {availableFrameRates.map((rate) => (
+              <SelectItem key={rate} value={rate.toString()}>
+                {rate} fps
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <p className="text-sm text-muted-foreground">Adjust the video frame rate. Higher frame rates may require more processing power.</p>
       </div>
 
