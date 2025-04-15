@@ -36,83 +36,128 @@ export default function Home() {
   const { sonner } = useSonner();
 
 
-  useEffect(() => {
-    let isMounted = true; // Track if the component is mounted
+  // useEffect(() => {
+  //   let isMounted = true; // Track if the component is mounted
 
-    const checkDisplayMediaPermission = async () => {
-      try {
+  //   const checkDisplayMediaPermission = async () => {
+  //     try {
+  //       // Check if the Permissions API is available
+  //       if (navigator.permissions && navigator.permissions.query) {
+  //         const permissionStatus = await navigator.permissions.query({ name: 'display-capture' });
+  //         if (permissionStatus.state === 'granted') {
+  //           if (isMounted) {
+  //             setHasDisplayMediaPermission(true);
+  //           }
+  //           return;
+  //         } else {
+  //            // If Permissions API is not available or permission is not granted, try to request it directly
+  //            try{
+  //             await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
+  //             if (isMounted) {
+  //                 setHasDisplayMediaPermission(true);
+  //             }
+  //           } catch(e){
+  //             console.error("Display media permission check failed:", e);
+  //               if (isMounted) {
+  //                 setHasDisplayMediaPermission(false);
+  //                 sonner("Screen Recording Permissions Required", {
+  //                   description: "Please allow screen recording permissions in your browser settings to use this feature.",
+  //                   duration: 5000,
+  //                 });
+  //               }
+  //           }
+  //         }
+  //       } else {
+  //           // If Permissions API is not available or permission is not granted, try to request it directly
+  //           try{
+  //             await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
+  //             if (isMounted) {
+  //               setHasDisplayMediaPermission(true);
+  //             }
+  //           } catch(e){
+  //             console.error("Display media permission check failed:", e);
+  //             if (isMounted) {
+  //               setHasDisplayMediaPermission(false);
+  //                sonner("Screen Recording Permissions Required", {
+  //                 description: "Please allow screen recording permissions in your browser settings to use this feature.",
+  //                 duration: 5000,
+  //               });
+  //             }
+  //         }
+  //       }
+
+
+  //     } catch (error) {
+  //       console.error("Display media permission check failed:", error);
+  //       if (isMounted) {
+  //          setHasDisplayMediaPermission(false);
+  //           sonner("Screen Recording Permissions Required", {
+  //             description: "Please allow screen recording permissions in your browser settings to use this feature.",
+  //             duration: 5000,
+  //           });
+  //       }
+
+  //     }
+  //   };
+
+  //   // Call checkDisplayMediaPermission only when component is mounted
+  //   if (isMounted) {
+  //     checkDisplayMediaPermission();
+  //   }
+
+  //   // Cleanup function to prevent setting state on unmounted component
+  //   return () => {
+  //     isMounted = false;
+  //   };
+  // }, [sonner]);
+
+
+  const startRecording = async () => {
+
+     try {
         // Check if the Permissions API is available
         if (navigator.permissions && navigator.permissions.query) {
           const permissionStatus = await navigator.permissions.query({ name: 'display-capture' });
-          if (permissionStatus.state === 'granted') {
-            if (isMounted) {
-              setHasDisplayMediaPermission(true);
-            }
-            return;
-          } else {
-             // If Permissions API is not available or permission is not granted, try to request it directly
+          if (permissionStatus.state !== 'granted') {
              try{
               await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
-              if (isMounted) {
                   setHasDisplayMediaPermission(true);
-              }
-            } catch(e){
-              console.error("Display media permission check failed:", e);
-                if (isMounted) {
+              } catch(e){
+                console.error("Display media permission check failed:", e);
                   setHasDisplayMediaPermission(false);
                   sonner("Screen Recording Permissions Required", {
                     description: "Please allow screen recording permissions in your browser settings to use this feature.",
                     duration: 5000,
                   });
-                }
-            }
+                  return; // Exit the function if permission is denied
+              }
           }
         } else {
-            // If Permissions API is not available or permission is not granted, try to request it directly
             try{
               await navigator.mediaDevices.getDisplayMedia({ video: true , audio: true});
-              if (isMounted) {
-                setHasDisplayMediaPermission(true);
-              }
+              setHasDisplayMediaPermission(true);
             } catch(e){
               console.error("Display media permission check failed:", e);
-              if (isMounted) {
-                setHasDisplayMediaPermission(false);
-                 sonner("Screen Recording Permissions Required", {
-                  description: "Please allow screen recording permissions in your browser settings to use this feature.",
-                  duration: 5000,
-                });
-              }
-            }
+              setHasDisplayMediaPermission(false);
+               sonner("Screen Recording Permissions Required", {
+                description: "Please allow screen recording permissions in your browser settings to use this feature.",
+                duration: 5000,
+              });
+              return; // Exit the function if permission is denied
+          }
         }
 
 
       } catch (error) {
         console.error("Display media permission check failed:", error);
-        if (isMounted) {
            setHasDisplayMediaPermission(false);
             sonner("Screen Recording Permissions Required", {
               description: "Please allow screen recording permissions in your browser settings to use this feature.",
               duration: 5000,
             });
-        }
-
+          return; // Exit the function if permission is denied
       }
-    };
 
-    // Call checkDisplayMediaPermission only when component is mounted
-    if (isMounted) {
-      checkDisplayMediaPermission();
-    }
-
-    // Cleanup function to prevent setting state on unmounted component
-    return () => {
-      isMounted = false;
-    };
-  }, [sonner]);
-
-
-  const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
