@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
-import { Toaster, toast as sonnerToast } from 'sonner';
+import { toast as sonnerToast } from 'sonner'; // Import Sonner Toaster directly
 import { cn } from "@/lib/utils";
 import { uploadToGoFile } from "@/services/gofile"; // Import the GoFile service
 import { Loader2, Copy, Trash2 } from "lucide-react"; // Import Loader, Copy, and Trash icons
@@ -44,7 +44,11 @@ const isLowEndDevice = (): boolean => {
   const cores = navigator.hardwareConcurrency;
   const memory = (navigator as any).deviceMemory; // Note: deviceMemory is not universally supported
 
-  if ((cores && cores <= 4) || (memory && memory <= 4)) {
+  // Check for undefined or low values
+  const lowCores = cores !== undefined && cores <= 4;
+  const lowMemory = memory !== undefined && memory <= 4;
+
+  if (lowCores || lowMemory) {
     console.log(`Detected potential low-end device (Cores: ${cores ?? 'N/A'}, Memory: ${memory ?? 'N/A'}GB)`);
     return true;
   }
@@ -78,12 +82,13 @@ export default function Home() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [recordedLinks, setRecordedLinks] = useState<GoFileLinkData[]>([]); // State for stored links
 
-  // Set initial state based on device detection
-  const getInitialResolution = () => isLowEndDevice() ? defaultLowEndResolution : defaultHighEndResolution;
-  const getInitialFrameRate = () => isLowEndDevice() ? defaultLowEndFrameRate : defaultHighEndFrameRate;
+  // State to hold initial settings determined after client mount
+  const [initialResolution, setInitialResolution] = useState<typeof resolutions[0] | null>(null);
+  const [initialFrameRate, setInitialFrameRate] = useState<number | null>(null);
 
-  const [selectedResolution, setSelectedResolution] = useState(() => getInitialResolution());
-  const [frameRate, setFrameRate] = useState(() => getInitialFrameRate());
+  const [selectedResolution, setSelectedResolution] = useState<typeof resolutions[0] | null>(null);
+  const [frameRate, setFrameRate] = useState<number | null>(null);
+
 
   const [isCheckingPermission, setIsCheckingPermission] = useState(true);
 
@@ -144,9 +149,13 @@ export default function Home() {
       // This effect runs only once on the client after hydration
       setIsClient(true);
 
-      // Re-evaluate settings on client mount after hydration
-      setSelectedResolution(getInitialResolution());
-      setFrameRate(getInitialFrameRate());
+      // Determine initial settings based on device capabilities on the client
+      const initialRes = isLowEndDevice() ? defaultLowEndResolution : defaultHighEndResolution;
+      const initialFps = isLowEndDevice() ? defaultLowEndFrameRate : defaultHighEndFrameRate;
+      setInitialResolution(initialRes);
+      setInitialFrameRate(initialFps);
+      setSelectedResolution(initialRes); // Set the current selection
+      setFrameRate(initialFps); // Set the current selection
 
       // Load links from cookie
       setRecordedLinks(loadLinksFromCookie());
@@ -155,6 +164,7 @@ export default function Home() {
       const checkDisplayMediaPermission = async () => {
           let isMounted = true;
           setIsCheckingPermission(true);
+          let permissionGranted = false; // Track permission state locally
 
           if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
               if (navigator.permissions && navigator.permissions.query) {
@@ -164,14 +174,16 @@ export default function Home() {
 
                       if (isMounted) {
                            console.log("Initial display-capture permission state:", permissionStatus.state);
-                           setHasDisplayMediaPermission(permissionStatus.state === 'granted');
+                           permissionGranted = permissionStatus.state === 'granted';
+                           setHasDisplayMediaPermission(permissionGranted);
                       }
 
                       // Listen for changes in permission status
                       permissionStatus.onchange = () => {
                            if (isMounted) {
                                console.log("Display-capture permission state changed to:", permissionStatus.state);
-                               setHasDisplayMediaPermission(permissionStatus.state === 'granted');
+                               permissionGranted = permissionStatus.state === 'granted';
+                               setHasDisplayMediaPermission(permissionGranted);
                            }
                       };
 
@@ -180,19 +192,23 @@ export default function Home() {
                        // Don't assume permission denied if query fails, let startRecording handle the prompt
                       if (isMounted) {
                           setHasDisplayMediaPermission(false); // Assume false, requires user action
+                          permissionGranted = false;
                       }
                   }
               } else {
                   console.warn("Permissions API not fully supported, assuming permission needs to be requested.");
                    if (isMounted) {
                       setHasDisplayMediaPermission(false); // Assume false, requires user action
+                      permissionGranted = false;
                   }
               }
+
           } else {
               console.warn("Screen Capture API not fully supported in this browser.");
               if (isMounted) {
                   setHasDisplayMediaPermission(false); // Assume false if API not supported
               }
+              permissionGranted = false;
               sonnerToast.error("Unsupported Browser", {
                   description: "Screen recording features are not available in your current browser.",
                   duration: 5000,
@@ -201,6 +217,7 @@ export default function Home() {
 
            if (isMounted) {
               setIsCheckingPermission(false);
+              console.log("Finished checking permissions, granted:", permissionGranted);
           }
 
           return () => {
@@ -220,18 +237,37 @@ export default function Home() {
               URL.revokeObjectURL(videoURL);
           }
       };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array ensures this runs only once on mount
 
 
   const startRecording = async () => {
-    if (!isClient || !isMediaRecorderSupported()) {
-      sonnerToast.error("Recording Error", {
-        description: "Screen recording is not supported in this browser or environment.",
+    // Ensure running on client and necessary APIs are available
+    if (!isClient || !isMediaRecorderSupported() || !selectedResolution || frameRate === null) {
+      sonnerToast.error("Setup Incomplete", {
+        description: "Cannot start recording. Ensure settings are selected and the browser is supported.",
         duration: 5000,
       });
       return;
     }
+
+    // Check if getDisplayMedia is likely disallowed by permissions policy (common in iframes/sandboxed envs)
+    // This is a heuristic check before calling getDisplayMedia
+    try {
+       if (navigator.permissions && navigator.permissions.query) {
+            const permissionStatus = await navigator.permissions.query({ name: 'display-capture' as PermissionName });
+            if (permissionStatus.state === 'denied') {
+                 sonnerToast.error("Permission Denied", {
+                   description: "Screen recording permission was previously denied. Please enable it in your browser settings.",
+                   duration: 6000,
+                 });
+                 return; // Stop if explicitly denied
+            }
+       }
+    } catch (permError) {
+       console.warn("Could not query display-capture permission state:", permError);
+       // Proceed cautiously, getDisplayMedia will handle the actual request/error
+    }
+
 
     setVideoURL(null);
     setGofileLink(null); // Clear previous GoFile link
@@ -247,10 +283,12 @@ export default function Home() {
           cursor: 'always' // Keep cursor visible
         },
         audio: true, // Request audio
-        // preferCurrentTab: true // Optional: hint to prefer the current tab
       });
 
       streamRef.current = stream;
+      setHasDisplayMediaPermission(true); // Permission granted implicitly by successful getDisplayMedia
+      console.log("Media stream acquired successfully.");
+
       // Listen for the user stopping the share via browser UI
       stream.getVideoTracks()[0].onended = stopRecording;
       stream.addEventListener('inactive', stopRecording); // Fallback listener
@@ -270,8 +308,6 @@ export default function Home() {
       console.log("Using MIME type:", chosenMimeType);
 
       // Calculate a reasonable bitrate based on resolution and frame rate
-      // Factors adjusted based on experimentation for balance.
-      // ~0.1 bits per pixel per frame seems reasonable for screen content.
       const videoBitrate = selectedResolution.width * selectedResolution.height * frameRate * 0.1;
       const audioBitrate = 128000; // Standard 128kbps for audio
 
@@ -284,61 +320,69 @@ export default function Home() {
       mediaRecorder.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
           recordedChunks.current.push(event.data);
+          // console.log(`Recorded chunk size: ${event.data.size}`);
         }
       };
 
       mediaRecorder.current.onstop = async () => {
         // Ensure cleanup runs only once
-        if (!streamRef.current) return;
+        if (!streamRef.current && recordedChunks.current.length === 0) {
+            console.log("MediaRecorder stopped, but no stream or chunks. Exiting onstop.");
+            setRecording(false); // Ensure state is correct
+            return;
+        }
+        console.log("MediaRecorder stopped. Processing recording...");
 
-        console.log("MediaRecorder stopped.");
-
-        // Clean up stream listeners
-        stream.removeEventListener('inactive', stopRecording);
-        if (stream.getVideoTracks()[0]) {
-            stream.getVideoTracks()[0].onended = null;
+        // Clean up stream listeners and tracks if the stream still exists
+        if (streamRef.current) {
+            streamRef.current.removeEventListener('inactive', stopRecording);
+            const videoTrack = streamRef.current.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.onended = null;
+                // videoTrack.stop(); // Ensure tracks are stopped
+            }
+            streamRef.current.getAudioTracks().forEach(track => track.stop()); // Stop audio tracks too
+            streamRef.current = null; // Indicate stream is stopped
         }
 
-        streamRef.current = null; // Indicate stream is stopped
         setRecording(false); // Update recording state
-
 
         if (recordedChunks.current.length === 0) {
           console.warn("No data recorded.");
+          sonnerToast.warning("No Data Recorded", { description: "The recording was stopped before any data was captured." });
           return; // Nothing to process
         }
 
         const blob = new Blob(recordedChunks.current, { type: chosenMimeType });
         const url = URL.createObjectURL(blob);
         setVideoURL(url); // Set local preview URL
-        recordedChunks.current = []; // Clear chunks immediately
-
+        console.log(`Blob created: size=${blob.size}, type=${blob.type}, url=${url}`);
 
         // --- Start GoFile Upload ---
         setIsUploading(true);
-        setUploadError(null);
+        setUploadError(null); // Clear previous error before new upload
         const timestamp = new Date();
         const timestampStr = timestamp.toISOString().replace(/[:.]/g, '-');
         const filename = `recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps-${timestampStr}.${mimeTypeToExtension(mimeType)}`;
 
         try {
-            sonnerToast.info("Uploading to GoFile...", { id: 'gofile-upload' });
+            sonnerToast.info("Uploading to GoFile...", { id: 'gofile-upload', description:`Filename: ${filename}` });
             const downloadPage = await uploadToGoFile(blob, filename, ACCOUNT_TOKEN);
-            if (downloadPage) {
-                setGofileLink(downloadPage); // Set state for immediate UI update
-                // Add the link to cookies
-                addLinkToCookie({ url: downloadPage, timestamp: timestamp.getTime(), filename });
-                sonnerToast.success("Upload successful!", { description: "Video uploaded to GoFile.", id: 'gofile-upload', duration: 4000 });
-            } else {
-                throw new Error("GoFile API did not return a download page.");
-            }
+            // No need to check downloadPage truthiness here as uploadToGoFile throws on error
+            setGofileLink(downloadPage); // Set state for immediate UI update
+            // Add the link to cookies
+            addLinkToCookie({ url: downloadPage, timestamp: timestamp.getTime(), filename });
+            sonnerToast.success("Upload successful!", { description: "Video uploaded to GoFile.", id: 'gofile-upload', duration: 4000 });
         } catch (error: any) {
             console.error("GoFile upload failed:", error);
+            // Use the specific error message from uploadToGoFile or a generic one
             const errorMessage = error instanceof Error ? error.message : "An unknown error occurred during upload.";
-            setUploadError(`GoFile upload failed: ${errorMessage}`);
+            setUploadError(`GoFile upload failed: ${errorMessage}`); // Set error state for UI
             sonnerToast.error("GoFile Upload Failed", { description: errorMessage, id: 'gofile-upload', duration: 6000 });
         } finally {
             setIsUploading(false);
+            recordedChunks.current = []; // Clear chunks after processing (upload attempt or failure)
+            console.log("Cleared recorded chunks.");
         }
         // --- End GoFile Upload ---
       };
@@ -364,7 +408,6 @@ export default function Home() {
 
       mediaRecorder.current.start(1000); // Collect data in chunks (e.g., every second)
       setRecording(true);
-      setHasDisplayMediaPermission(true); // Permission granted implicitly by successful getDisplayMedia
       sonnerToast.success("Recording Started", {
           description: `Capturing screen at ${selectedResolution.label}, ${frameRate}fps.`,
           duration: 3000,
@@ -377,19 +420,19 @@ export default function Home() {
 
       if (error.name === 'NotAllowedError') {
         sonnerToast.error("Permission Required", {
-          description: "Can't start recording. Please grant screen recording permissions.",
-          duration: 5000,
+          description: "Screen recording permission denied. Please grant access via the browser prompt or settings.",
+          duration: 6000,
         });
       } else if (error.name === 'NotFoundError') {
           sonnerToast.error("No Screen Found", {
-             description: "No screen or window selected for recording.",
+             description: "No screen, window, or tab was selected for recording.",
              duration: 5000,
           });
       } else if (error.message?.includes("permissions policy") || error.name === 'NotSupportedError' || error.name === 'SecurityError') {
-          sonnerToast.error("Recording Unavailable", {
-              description: "Can't start recording here due to browser/OS restrictions or security policy.",
-              duration: 6000,
-          });
+            sonnerToast.error("Recording Unavailable", {
+                description: "Can't start recording here. This might be due to browser/OS restrictions, security policies (e.g., in an iframe), or lack of HTTPS.",
+                duration: 7000,
+            });
       } else {
         sonnerToast.error("Recording Failed", {
           description: `Could not start recording: ${error.message || 'Unknown error'}`,
@@ -408,25 +451,42 @@ export default function Home() {
 
   const stopRecording = () => {
     console.log("Stop recording requested.");
+    // Check if the recorder exists and is actually recording
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
        console.log("Stopping MediaRecorder.");
-       mediaRecorder.current.stop(); // The onstop handler will manage the rest
+       try {
+           mediaRecorder.current.stop(); // The onstop handler will manage the rest
+       } catch (e) {
+           console.error("Error stopping MediaRecorder:", e);
+            // Force cleanup if stop fails
+            if (streamRef.current) {
+               streamRef.current.getTracks().forEach(track => track.stop());
+               streamRef.current = null;
+            }
+           setRecording(false);
+           recordedChunks.current = []; // Clear potentially corrupted chunks
+           sonnerToast.error("Stop Error", { description: "Failed to properly stop the recorder." });
+       }
     } else if (streamRef.current) {
-       // If recorder didn't start or is already stopped, but stream exists
-       console.log("Stopping MediaStream tracks directly.");
+       // If recorder isn't recording but stream exists (e.g., user cancelled prompt after granting permission)
+       console.log("Stopping MediaStream tracks directly (recorder not active).");
        streamRef.current.getTracks().forEach(track => track.stop());
        streamRef.current = null;
        setRecording(false); // Ensure recording state is false
+       recordedChunks.current = []; // Clear any stray chunks
     } else {
         console.log("No active recording or stream to stop.");
-        // Ensure state consistency if called multiple times
+        // Ensure state consistency if called multiple times or unexpectedly
         setRecording(false);
+        if (mediaRecorder.current?.state && mediaRecorder.current.state !== "inactive") {
+           console.warn(`MediaRecorder state is: ${mediaRecorder.current.state}, but stop wasn't triggered correctly.`);
+        }
     }
   };
 
 
-  // Render loading state or permission prompt if needed
-  if (!isClient || isCheckingPermission) {
+  // Render loading state until client is ready and initial settings are determined
+  if (!isClient || initialResolution === null || initialFrameRate === null || isCheckingPermission) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
         <h1 className="text-3xl font-bold mb-6 text-primary">Resolution Recorder</h1>
@@ -436,13 +496,27 @@ export default function Home() {
           </CardHeader>
           <CardContent className="space-y-4 p-0">
             <div className="text-center text-muted-foreground flex items-center justify-center">
-               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading...
+               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {isCheckingPermission ? 'Checking permissions...' : 'Initializing...'}
             </div>
+            {/* Render disabled selects as placeholders */}
+            <div className="flex flex-col space-y-2">
+                <Label htmlFor="resolution-loading" className="text-sm font-medium opacity-50">Resolution</Label>
+                 <Select disabled>
+                    <SelectTrigger id="resolution-loading"><SelectValue placeholder="Loading..." /></SelectTrigger>
+                 </Select>
+            </div>
+             <div className="flex flex-col space-y-2">
+                <Label htmlFor="framerate-loading" className="text-sm font-medium opacity-50">Frame Rate</Label>
+                 <Select disabled>
+                    <SelectTrigger id="framerate-loading"><SelectValue placeholder="Loading..." /></SelectTrigger>
+                 </Select>
+             </div>
           </CardContent>
           <CardFooter className="flex justify-center pt-6 p-0">
             <Button className="w-full" disabled>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Checking Permissions...
+              {isCheckingPermission ? 'Checking...' : 'Loading...'}
             </Button>
           </CardFooter>
         </Card>
@@ -454,8 +528,11 @@ export default function Home() {
    const getButtonState = () => {
      if (recording) return { disabled: false, text: 'Stop Recording' };
      if (isUploading) return { disabled: true, text: 'Uploading...' };
-     // Button is enabled even if permission *might* be needed.
-     // Let startRecording handle the prompt/error.
+     // Enable button even if permissions might be needed. Let startRecording handle prompt/error.
+     // However, disable if selectedResolution or frameRate is somehow null (shouldn't happen after loading state).
+     if (!selectedResolution || frameRate === null) {
+         return { disabled: true, text: 'Initializing...' };
+     }
      return { disabled: false, text: 'Start Recording' };
    };
 
@@ -463,6 +540,10 @@ export default function Home() {
 
    // Function to copy link to clipboard
    const copyToClipboard = (text: string) => {
+       if (!navigator.clipboard) {
+           sonnerToast.error("Clipboard API not available.");
+           return;
+       }
        navigator.clipboard.writeText(text).then(() => {
            sonnerToast.success("Link copied to clipboard!");
        }, (err) => {
@@ -474,7 +555,7 @@ export default function Home() {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
-      <Toaster richColors position="top-center" />
+      {/* <Toaster richColors position="top-center" /> */} {/* Removed: Toaster is in layout.tsx */}
       <h1 className="text-3xl font-bold mb-6 text-primary">Resolution Recorder</h1>
 
       <Card className="w-full max-w-md p-6 shadow-lg rounded-lg border border-border mb-8">
@@ -486,7 +567,8 @@ export default function Home() {
           <div className="flex flex-col space-y-2">
             <Label htmlFor="resolution" className="text-sm font-medium">Resolution</Label>
             <Select
-              value={selectedResolution.label}
+              // Use the initial value determined on the client
+              value={selectedResolution?.label || ''}
               onValueChange={(value) => {
                 const res = resolutions.find((r) => r.label === value);
                 if (res) setSelectedResolution(res);
@@ -510,7 +592,8 @@ export default function Home() {
           <div className="flex flex-col space-y-2">
             <Label htmlFor="frameRate" className="text-sm font-medium">Frame Rate</Label>
             <Select
-              value={frameRate.toString()}
+               // Use the initial value determined on the client
+              value={frameRate?.toString() || ''}
               onValueChange={(value) => setFrameRate(parseInt(value))}
               disabled={recording || isUploading}
             >
@@ -555,27 +638,30 @@ export default function Home() {
               <video
                 src={videoURL}
                 controls
-                className="rounded-md shadow-sm w-full aspect-video border border-border"
+                autoPlay={false} // Don't autoplay the preview
+                className="rounded-md shadow-sm w-full aspect-video border border-border bg-muted" // Added background color
                 aria-label="Screen recording preview"
+                key={videoURL} // Add key to force re-render when URL changes
               />
             </CardContent>
-            <CardFooter className="p-0 pt-4 flex justify-center gap-4">
+            <CardFooter className="p-0 pt-4 flex flex-wrap justify-center gap-4">
               {/* Local Download Button */}
               <a
                 href={videoURL}
-                download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
+                // Generate filename based on current settings when download is clicked
+                download={`recording-${selectedResolution?.label.split(' ')[0] || 'unknown'}-${frameRate || 'unknown'}fps.${mimeTypeToExtension(mimeType)}`}
                 className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
               >
                 Download Locally
               </a>
-              {/* GoFile Link Section (if available) */}
+              {/* GoFile Link Section (if available and not uploading) */}
               {gofileLink && !isUploading && (
                 <div className="flex items-center space-x-2">
                   <a
                     href={gofileLink}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-accent hover:underline font-medium text-sm"
+                    className="text-accent hover:underline font-medium text-sm truncate max-w-[200px]" // Added truncate
                     title={gofileLink}
                   >
                     GoFile Link
@@ -604,17 +690,17 @@ export default function Home() {
         {recordedLinks.length > 0 && (
             <Card className="w-full max-w-4xl mt-12 p-4 shadow-lg rounded-lg border border-border">
                 <CardHeader className="p-0 pb-4">
-                    <CardTitle className="text-xl text-center">Recording History</CardTitle>
+                    <CardTitle className="text-xl text-center">Recording History (Last 50)</CardTitle>
                 </CardHeader>
                 <CardContent className="p-0">
                     <Table>
-                        <TableCaption>Your recent GoFile recording links.</TableCaption>
+                        <TableCaption>Your recent GoFile recording links (stored in browser cookies).</TableCaption>
                         <TableHeader>
                             <TableRow>
-                                <TableHead>Filename</TableHead>
-                                <TableHead>Recorded On</TableHead>
-                                <TableHead className="text-center">Link</TableHead>
-                                <TableHead className="text-right">Actions</TableHead>
+                                <TableHead className="w-[40%]">Filename</TableHead>
+                                <TableHead className="w-[30%]">Recorded On</TableHead>
+                                <TableHead className="text-center w-[15%]">Link</TableHead>
+                                <TableHead className="text-right w-[15%]">Actions</TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -629,7 +715,7 @@ export default function Home() {
                                             href={link.url}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            className="text-accent hover:underline text-sm"
+                                            className={cn(buttonVariants({ variant: "link", size: "sm" }), "px-1")}
                                         >
                                             Open
                                         </a>
