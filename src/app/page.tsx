@@ -22,8 +22,35 @@ const resolutions = [
 
 const availableFrameRates = [30, 60];
 
+// Default high-end settings
+const defaultHighEndResolution = resolutions[2]; // 4K
+const defaultHighEndFrameRate = 60;
+
+// Default low-end settings
+const defaultLowEndResolution = resolutions[4]; // 1080p
+const defaultLowEndFrameRate = 30;
+
 // Helper function to check MediaRecorder support
 const isMediaRecorderSupported = () => typeof MediaRecorder !== 'undefined';
+
+// --- Helper Function to detect low-end device ---
+const isLowEndDevice = (): boolean => {
+  if (typeof navigator === 'undefined') return false; // Cannot detect on server
+
+  const cores = navigator.hardwareConcurrency;
+  // const memory = (navigator as any).deviceMemory; // deviceMemory is less reliable/standardized
+
+  // Simple heuristic: Consider device low-end if it has 4 or fewer logical cores
+  // Adjust this threshold based on testing and desired performance trade-off
+  if (cores && cores <= 4) {
+    console.log(`Detected low-end device (Cores: ${cores})`);
+    return true;
+  }
+
+  // console.log(`Detected standard/high-end device (Cores: ${cores ?? 'N/A'})`);
+  return false;
+};
+// --- End Helper Function ---
 
 export default function Home() {
   const [isClient, setIsClient] = useState(false);
@@ -31,15 +58,29 @@ export default function Home() {
   const [videoURL, setVideoURL] = useState<string | null>(null);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
-  // Initialize permission assuming we need to request it or check it.
   const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState<boolean | null>(null);
   const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
-  const [selectedResolution, setSelectedResolution] = useState(resolutions[2]); // Default to 4K
-  const [frameRate, setFrameRate] = useState(60);
+
+  // Set initial state based on device detection (will be updated in useEffect)
+  const [selectedResolution, setSelectedResolution] = useState(defaultHighEndResolution);
+  const [frameRate, setFrameRate] = useState(defaultHighEndFrameRate);
+
   const [isCheckingPermission, setIsCheckingPermission] = useState(true); // Track initial check
 
   useEffect(() => {
     setIsClient(true); // Indicate component has mounted on the client
+
+    // --- Device Performance Check and Default Setting ---
+    const lowEnd = isLowEndDevice();
+    if (lowEnd) {
+      setSelectedResolution(defaultLowEndResolution);
+      setFrameRate(defaultLowEndFrameRate);
+    } else {
+      setSelectedResolution(defaultHighEndResolution);
+      setFrameRate(defaultHighEndFrameRate);
+    }
+    // --- End Device Check ---
+
 
     // Function to check display media permission status without prompting
     const checkDisplayMediaPermission = async () => {
@@ -112,7 +153,7 @@ export default function Home() {
         URL.revokeObjectURL(videoURL);
       }
     };
-  }, []); // Only run on mount
+  }, [videoURL]); // Re-added videoURL dependency for cleanup
 
   const startRecording = async () => {
     if (!isClient || !isMediaRecorderSupported()) {
@@ -123,48 +164,17 @@ export default function Home() {
       return;
     }
 
-    // Re-check or request permission just before starting
-     if (hasDisplayMediaPermission === false) {
-       try {
-         // Explicitly request permission now
-         await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-         setHasDisplayMediaPermission(true); // Permission granted
-       } catch (error: any) {
-          console.error("Error getting display media permission:", error);
-          setHasDisplayMediaPermission(false); // Update state if denied
-          if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
-             sonnerToast.error("Permission Required", {
-               description: "Can't start recording. Please grant screen recording permissions.",
-               duration: 5000,
-             });
-          } else if (error.message.includes("permissions policy")) {
-             sonnerToast.error("Permission Policy Issue", {
-                description: "Can't start recording here due to browser or website restrictions.",
-                duration: 5000,
-            });
-          }
-          else {
-             sonnerToast.error("Recording Failed", {
-               description: `Could not get screen access: ${error.message}`,
-               duration: 5000,
-             });
-          }
-         return; // Stop if permission wasn't granted
-       }
-     }
-
-
     setVideoURL(null); // Clear previous recording if any
     recordedChunks.current = []; // Clear existing chunks
 
     try {
-       // If permission was already granted or just granted, proceed to get the stream with desired settings
+      // Request permission just before starting if needed
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          width: { ideal: selectedResolution.width, max: selectedResolution.width }, // Use ideal and max
+          width: { ideal: selectedResolution.width, max: selectedResolution.width },
           height: { ideal: selectedResolution.height, max: selectedResolution.height },
-          frameRate: { ideal: frameRate, max: frameRate }, // Use ideal and max for frame rate
-          // cursor: 'always' // Optional: Show cursor in recording
+          frameRate: { ideal: frameRate, max: frameRate },
+          // cursor: 'always' // Optional: Show cursor
         },
         audio: true, // Request audio
       });
@@ -174,21 +184,16 @@ export default function Home() {
       // Handle inactive stream (e.g., user stops sharing from browser UI)
       stream.addEventListener('inactive', stopRecording);
 
-
-      const mimeType = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/webm'].find(
-           (type) => MediaRecorder.isTypeSupported(type)
+      const mimeType = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/webm'].find(
+        (type) => MediaRecorder.isTypeSupported(type)
       ) || 'video/webm';
-       console.log("Using MIME type:", mimeType);
-
+      console.log("Using MIME type:", mimeType);
 
       mediaRecorder.current = new MediaRecorder(stream, {
         mimeType: mimeType,
-        // Adjust bitrates based on resolution and frame rate. Higher needs more bitrate.
-        // These are general starting points, may need more tuning.
-        videoBitsPerSecond: selectedResolution.width * selectedResolution.height * frameRate * 0.1, // Rough calculation
+        videoBitsPerSecond: selectedResolution.width * selectedResolution.height * frameRate * 0.1, // Rough estimate
         audioBitsPerSecond: 128000, // 128 kbps for audio
       });
-
 
       mediaRecorder.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -199,15 +204,13 @@ export default function Home() {
       mediaRecorder.current.onstop = () => {
         if (recordedChunks.current.length === 0) {
           console.warn("No data recorded.");
-           setRecording(false);
+          setRecording(false);
           stream.removeEventListener('inactive', stopRecording); // Clean up listener
           streamRef.current = null; // Clear stream ref
           return;
         }
 
-        const blob = new Blob(recordedChunks.current, {
-          type: mimeType,
-        });
+        const blob = new Blob(recordedChunks.current, { type: mimeType });
         const url = URL.createObjectURL(blob);
         setVideoURL(url);
         recordedChunks.current = [];
@@ -216,175 +219,177 @@ export default function Home() {
         setRecording(false);
       };
 
-       mediaRecorder.current.onerror = (event) => {
+      mediaRecorder.current.onerror = (event: Event) => {
         console.error("MediaRecorder error:", event);
-         // Use a more specific error type if possible, otherwise default to 'error'
+        // Try to access specific error if possible (DOMError in some browsers)
         let errorMessage = "An error occurred during recording.";
-        // TODO: Inspect the event further for specific error details if available
-        // if (event.error && event.error.name) { errorMessage += ` Name: ${event.error.name}`; }
-        // if (event.error && event.error.message) { errorMessage += ` Message: ${event.error.message}`; }
+        if (event instanceof ErrorEvent && event.error) {
+             errorMessage = `Recording error: ${event.error.name} - ${event.error.message}`;
+        } else if ((event as any).error) { // Fallback for older event structures
+             const err = (event as any).error;
+             errorMessage = `Recording error: ${err.name || 'Unknown'} - ${err.message || 'No message'}`;
+        }
 
         sonnerToast.error("Recording Error", {
-            description: errorMessage,
-            duration: 5000,
+          description: errorMessage,
+          duration: 5000,
         });
         stopRecording(); // Attempt to stop gracefully
       };
 
-      mediaRecorder.current.start(100); // Collect data more frequently (e.g., every 100ms) for potentially better sync
+      mediaRecorder.current.start(100); // Collect data frequently
       setRecording(true);
+      setHasDisplayMediaPermission(true); // Assume permission granted if getDisplayMedia succeeded
 
     } catch (error: any) {
       console.error("Error starting recording stream:", error);
-      // Permission error might have been caught earlier, but handle other potential errors here
-      if (!`${error.message}`.includes("Permission denied")) { // Avoid duplicate permission messages
-           sonnerToast.error("Recording Failed", {
-            description: `Could not start recording: ${error.message}`,
-            duration: 5000,
+      setHasDisplayMediaPermission(false); // Permission likely denied or failed
+      if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+        sonnerToast.error("Permission Required", {
+          description: "Can't start recording. Please grant screen recording permissions.",
+          duration: 5000,
+        });
+      } else if (error.message?.includes("permissions policy")) {
+          sonnerToast.error("Recording Unavailable", {
+              description: "Can't start recording here due to browser or website restrictions (Permissions Policy).",
+              duration: 6000,
           });
+      } else {
+        sonnerToast.error("Recording Failed", {
+          description: `Could not start recording: ${error.message}`,
+          duration: 5000,
+        });
       }
-       // Ensure recording state is false if start failed
-       setRecording(false);
-       if (streamRef.current) {
-            streamRef.current.getTracks().forEach(track => track.stop());
-            streamRef.current = null;
-        }
+      // Ensure recording state is false if start failed
+      setRecording(false);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
     }
   };
 
- const stopRecording = () => {
-    // Check both mediaRecorder and stream
+  const stopRecording = () => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
-      mediaRecorder.current.requestData(); // Request any remaining data before stopping
+      mediaRecorder.current.requestData(); // Request final data
       mediaRecorder.current.stop();
     }
-    // Also stop tracks directly, especially if recorder failed to start but stream was acquired
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
-       streamRef.current.removeEventListener('inactive', stopRecording); // Clean up listener
+      streamRef.current.removeEventListener('inactive', stopRecording); // Clean up listener
     }
-
     streamRef.current = null; // Clear stream ref
-    // MediaRecorder.onstop will set recording to false
+    // onstop handler will set recording to false
   };
 
-  // Prevent rendering on server or before client mount to avoid hydration errors
+  // Render loading state during SSR and initial client mount before hydration check completes
   if (!isClient) {
-    // Render a basic loading state or null during SSR and initial client mount
     return (
-        <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
-             <h1 className="text-3xl font-bold mb-6 text-primary">Resolution Recorder</h1>
-             <Card className="w-full max-w-md p-6 shadow-lg rounded-lg border border-border">
-                 <CardHeader className="p-0 pb-4">
-                     <CardTitle className="text-xl text-center">Recording Settings</CardTitle>
-                 </CardHeader>
-                 <CardContent className="space-y-4 p-0">
-                    {/* Simplified loading state */}
-                    <div className="text-center text-muted-foreground">Loading settings...</div>
-                 </CardContent>
-                 <CardFooter className="flex justify-center pt-6 p-0">
-                     <Button className="w-full" disabled>Loading...</Button>
-                 </CardFooter>
-             </Card>
-        </div>
+      <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
+        <h1 className="text-3xl font-bold mb-6 text-primary">Resolution Recorder</h1>
+        <Card className="w-full max-w-md p-6 shadow-lg rounded-lg border border-border">
+          <CardHeader className="p-0 pb-4">
+            <CardTitle className="text-xl text-center">Recording Settings</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 p-0">
+            <div className="text-center text-muted-foreground">Loading settings...</div>
+          </CardContent>
+          <CardFooter className="flex justify-center pt-6 p-0">
+            <Button className="w-full" disabled>Loading...</Button>
+          </CardFooter>
+        </Card>
+      </div>
     );
   }
 
-  const getButtonState = () => {
+   const getButtonState = () => {
      if (isCheckingPermission) return { disabled: true, text: 'Checking Permissions...' };
+     // Let the startRecording function handle the permission request/check on click
      if (recording) return { disabled: false, text: 'Stop Recording' };
-     // Button should be enabled even if permission is not granted yet, clicking it will trigger the request.
      return { disabled: false, text: 'Start Recording' };
-  };
+   };
 
   const buttonState = getButtonState();
-
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
       <Toaster richColors position="top-center" />
       <h1 className="text-3xl font-bold mb-6 text-primary">Resolution Recorder</h1>
 
-       <Card className="w-full max-w-md p-6 shadow-lg rounded-lg border border-border">
-            <CardHeader className="p-0 pb-4">
-                <CardTitle className="text-xl text-center">Recording Settings</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 p-0">
-                 <div className="flex flex-col space-y-2">
-                    <Label htmlFor="resolution" className="text-sm font-medium">Resolution</Label>
-                    <Select
-                      value={selectedResolution.label}
-                      onValueChange={(value) => {
-                        const res = resolutions.find((r) => r.label === value);
-                        if (res) {
-                          setSelectedResolution(res);
-                        }
-                      }}
-                      disabled={recording}
-                    >
-                      <SelectTrigger id="resolution" className="w-full">
-                        <SelectValue placeholder="Select resolution..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {resolutions.map((resolution) => (
-                          <SelectItem key={resolution.label} value={resolution.label}>
-                            {resolution.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+      <Card className="w-full max-w-md p-6 shadow-lg rounded-lg border border-border">
+        <CardHeader className="p-0 pb-4">
+          <CardTitle className="text-xl text-center">Recording Settings</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 p-0">
+          <div className="flex flex-col space-y-2">
+            <Label htmlFor="resolution" className="text-sm font-medium">Resolution</Label>
+            <Select
+              value={selectedResolution.label}
+              onValueChange={(value) => {
+                const res = resolutions.find((r) => r.label === value);
+                if (res) setSelectedResolution(res);
+              }}
+              disabled={recording}
+            >
+              <SelectTrigger id="resolution" className="w-full">
+                <SelectValue placeholder="Select resolution..." />
+              </SelectTrigger>
+              <SelectContent>
+                {resolutions.map((resolution) => (
+                  <SelectItem key={resolution.label} value={resolution.label}>
+                    {resolution.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-                   <div className="flex flex-col space-y-2">
-                    <Label htmlFor="frameRate" className="text-sm font-medium">Frame Rate</Label>
-                    <Select
-                        value={frameRate.toString()}
-                         onValueChange={(value) => {
-                           setFrameRate(parseInt(value));
-                         }}
-                         disabled={recording}
-                        >
-                          <SelectTrigger id="frameRate" className="w-full">
-                            <SelectValue placeholder="Select frame rate..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {availableFrameRates.map((rate) => (
-                              <SelectItem key={rate} value={rate.toString()}>
-                                {rate} fps
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <p className="text-xs text-muted-foreground">Higher frame rates result in smoother video but require more resources.</p>
-                    </div>
-            </CardContent>
-             <CardFooter className="flex justify-center pt-6 p-0">
-                 <Button
-                   onClick={recording ? stopRecording : startRecording}
-                   className={cn("w-full transition-colors duration-200 ease-in-out",
-                      recording ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "bg-primary text-primary-foreground hover:bg-primary/90"
-                   )}
-                   disabled={buttonState.disabled}
-                   aria-label={recording ? "Stop screen recording" : "Start screen recording"}
-                 >
-                    {buttonState.text}
-                 </Button>
-             </CardFooter>
-           </Card>
-
+          <div className="flex flex-col space-y-2">
+            <Label htmlFor="frameRate" className="text-sm font-medium">Frame Rate</Label>
+            <Select
+              value={frameRate.toString()}
+              onValueChange={(value) => setFrameRate(parseInt(value))}
+              disabled={recording}
+            >
+              <SelectTrigger id="frameRate" className="w-full">
+                <SelectValue placeholder="Select frame rate..." />
+              </SelectTrigger>
+              <SelectContent>
+                {availableFrameRates.map((rate) => (
+                  <SelectItem key={rate} value={rate.toString()}>
+                    {rate} fps
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">Higher frame rates result in smoother video but require more resources.</p>
+          </div>
+        </CardContent>
+        <CardFooter className="flex justify-center pt-6 p-0">
+          <Button
+            onClick={recording ? stopRecording : startRecording}
+            className={cn("w-full transition-colors duration-200 ease-in-out",
+              recording ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "bg-primary text-primary-foreground hover:bg-primary/90"
+            )}
+            disabled={buttonState.disabled}
+            aria-label={recording ? "Stop screen recording" : "Start screen recording"}
+          >
+            {buttonState.text}
+          </Button>
+        </CardFooter>
+      </Card>
 
       {videoURL && (
         <div className="mt-8 w-full max-w-2xl">
-           <h2 className="text-xl font-semibold mb-3 text-center">Recording Preview</h2>
+          <h2 className="text-xl font-semibold mb-3 text-center">Recording Preview</h2>
           <video
             src={videoURL}
             controls
-            // Removed fixed width/height, let it be responsive
             className="rounded-md shadow-md w-full aspect-video border border-border"
-            />
+          />
           <a
             href={videoURL}
-            download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mediaRecorder.current?.mimeType)}`} // More descriptive filename with correct extension
+            download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mediaRecorder.current?.mimeType)}`}
             className="block mt-4 text-center text-accent hover:underline font-medium"
           >
             Download Video ({selectedResolution.label.split(' ')[0]}, {frameRate}fps)
