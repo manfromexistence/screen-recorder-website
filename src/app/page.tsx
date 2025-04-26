@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCap
 import { toast as sonnerToast } from 'sonner'; // Import Sonner Toaster directly
 import { cn } from "@/lib/utils";
 import { uploadToGoFile } from "@/services/gofile"; // Import the GoFile service
-import { Loader2, Copy, Trash2 } from "lucide-react"; // Import Loader, Copy, and Trash icons
+import { Loader2, Copy, Trash2, Video } from "lucide-react"; // Import Loader, Copy, Trash, and Video icons
 import { getCookie, setCookie, deleteCookie } from 'cookies-next'; // Use cookies-next for easier cookie management
 
 // Define available resolutions
@@ -64,6 +64,8 @@ interface GoFileLinkData {
     url: string;
     timestamp: number;
     filename: string;
+    // Optional: Add a field to store the direct media URL if you fetch it later
+    // mediaUrl?: string;
 }
 
 export default function Home() {
@@ -170,12 +172,21 @@ export default function Home() {
               if (navigator.permissions && navigator.permissions.query) {
                   try {
                       // Query for display-capture permission status
+                      // Use 'display-capture' as the standard name
                       const permissionStatus = await navigator.permissions.query({ name: 'display-capture' as PermissionName });
 
                       if (isMounted) {
                            console.log("Initial display-capture permission state:", permissionStatus.state);
                            permissionGranted = permissionStatus.state === 'granted';
                            setHasDisplayMediaPermission(permissionGranted);
+
+                           // If permission denied, show toast immediately
+                           if (permissionStatus.state === 'denied') {
+                               sonnerToast.error("Screen Recording Denied", {
+                                  description: "Permission was previously denied. Please enable it in your browser settings.",
+                                  duration: 7000,
+                               });
+                           }
                       }
 
                       // Listen for changes in permission status
@@ -184,16 +195,43 @@ export default function Home() {
                                console.log("Display-capture permission state changed to:", permissionStatus.state);
                                permissionGranted = permissionStatus.state === 'granted';
                                setHasDisplayMediaPermission(permissionGranted);
+                               // If permission becomes denied, show toast
+                                if (permissionStatus.state === 'denied') {
+                                    sonnerToast.error("Screen Recording Denied", {
+                                       description: "Permission was denied. Please enable it in your browser settings.",
+                                       duration: 7000,
+                                    });
+                                }
                            }
                       };
 
-                  } catch (queryError) {
+                  } catch (queryError: any) {
                       console.warn("Permissions API query for display-capture failed:", queryError);
-                       // Don't assume permission denied if query fails, let startRecording handle the prompt
-                      if (isMounted) {
-                          setHasDisplayMediaPermission(false); // Assume false, requires user action
-                          permissionGranted = false;
-                      }
+                      // Fallback check: See if getDisplayMedia itself throws a permissions policy error immediately
+                       try {
+                           // Try to briefly request and immediately stop - this might reveal policy issues
+                           const tempStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1, height: 1 }, audio: false }); // minimal request
+                           tempStream.getTracks().forEach(track => track.stop());
+                           // If this succeeds without error, assume permission is possible (prompt needed)
+                           if (isMounted) setHasDisplayMediaPermission(false);
+                           permissionGranted = false;
+                       } catch (displayError: any) {
+                           if (isMounted) {
+                               if (displayError.name === 'NotAllowedError' && displayError.message?.includes('permissions policy')) {
+                                   console.warn("Permissions policy likely disallows getDisplayMedia.");
+                                   sonnerToast.error("Recording Unavailable", {
+                                       description: "Can't start recording here due to browser security policy (e.g., in an iframe).",
+                                       duration: 7000,
+                                   });
+                                   setHasDisplayMediaPermission(false); // Policy issue = effectively no permission
+                                   permissionGranted = false;
+                               } else {
+                                   // Other error during check, assume prompt needed
+                                   setHasDisplayMediaPermission(false);
+                                   permissionGranted = false;
+                               }
+                           }
+                       }
                   }
               } else {
                   console.warn("Permissions API not fully supported, assuming permission needs to be requested.");
@@ -262,6 +300,13 @@ export default function Home() {
                  });
                  return; // Stop if explicitly denied
             }
+            // Check if prompt is needed
+            if (permissionStatus.state === 'prompt') {
+                sonnerToast.info("Permission Required", {
+                   description: "Please grant screen recording permission in the browser prompt.",
+                   duration: 5000,
+                 });
+            }
        }
     } catch (permError) {
        console.warn("Could not query display-capture permission state:", permError);
@@ -308,7 +353,8 @@ export default function Home() {
       console.log("Using MIME type:", chosenMimeType);
 
       // Calculate a reasonable bitrate based on resolution and frame rate
-      const videoBitrate = selectedResolution.width * selectedResolution.height * frameRate * 0.1;
+      // Adjusted multiplier for potentially better quality/size balance
+      const videoBitrate = selectedResolution.width * selectedResolution.height * frameRate * 0.07;
       const audioBitrate = 128000; // Standard 128kbps for audio
 
       mediaRecorder.current = new MediaRecorder(stream, {
@@ -339,9 +385,9 @@ export default function Home() {
             const videoTrack = streamRef.current.getVideoTracks()[0];
             if (videoTrack) {
                 videoTrack.onended = null;
-                // videoTrack.stop(); // Ensure tracks are stopped
+                // videoTrack.stop(); // Ensure tracks are stopped (might already be stopped)
             }
-            streamRef.current.getAudioTracks().forEach(track => track.stop()); // Stop audio tracks too
+             streamRef.current.getTracks().forEach(track => track.stop()); // Ensure all tracks are stopped
             streamRef.current = null; // Indicate stream is stopped
         }
 
@@ -416,23 +462,37 @@ export default function Home() {
 
     } catch (error: any) {
       console.error("Error starting recording stream:", error);
-      setHasDisplayMediaPermission(false); // Explicitly set to false on error
+      // Don't assume permission is false here, it might be a different error.
+      // setHasDisplayMediaPermission(false);
 
       if (error.name === 'NotAllowedError') {
-        sonnerToast.error("Permission Required", {
-          description: "Screen recording permission denied. Please grant access via the browser prompt or settings.",
-          duration: 6000,
-        });
+        // Distinguish between user denial and policy denial
+        if (error.message?.includes('permissions policy')) {
+             sonnerToast.error("Recording Unavailable", {
+                description: "Can't start recording here. This might be due to browser/OS restrictions or security policies (e.g., in an iframe).",
+                duration: 7000,
+            });
+            setHasDisplayMediaPermission(false); // Policy issue = effectively no permission
+        } else {
+             sonnerToast.error("Permission Required", {
+                description: "Screen recording permission denied. Please grant access via the browser prompt or settings.",
+                duration: 6000,
+            });
+            // Update permission state if we know it's user denial
+            setHasDisplayMediaPermission(false);
+        }
       } else if (error.name === 'NotFoundError') {
           sonnerToast.error("No Screen Found", {
              description: "No screen, window, or tab was selected for recording.",
              duration: 5000,
           });
-      } else if (error.message?.includes("permissions policy") || error.name === 'NotSupportedError' || error.name === 'SecurityError') {
+      } else if (error.name === 'NotSupportedError' || error.name === 'SecurityError') {
             sonnerToast.error("Recording Unavailable", {
-                description: "Can't start recording here. This might be due to browser/OS restrictions, security policies (e.g., in an iframe), or lack of HTTPS.",
+                description: "Can't start recording here. This might be due to browser/OS restrictions, security policies, or lack of HTTPS.",
                 duration: 7000,
             });
+            // We can assume permission is not available in this context
+            setHasDisplayMediaPermission(false);
       } else {
         sonnerToast.error("Recording Failed", {
           description: `Could not start recording: ${error.message || 'Unknown error'}`,
@@ -528,8 +588,12 @@ export default function Home() {
    const getButtonState = () => {
      if (recording) return { disabled: false, text: 'Stop Recording' };
      if (isUploading) return { disabled: true, text: 'Uploading...' };
-     // Enable button even if permissions might be needed. Let startRecording handle prompt/error.
-     // However, disable if selectedResolution or frameRate is somehow null (shouldn't happen after loading state).
+     // Disable button if permission is explicitly denied or not yet determined/checked
+     if (hasDisplayMediaPermission === false) {
+        return { disabled: true, text: 'Permissions Required' }; // Or a more specific message
+     }
+     // Enable button even if permissions might be needed (state is null or true).
+     // Let startRecording handle the prompt/error.
      if (!selectedResolution || frameRate === null) {
          return { disabled: true, text: 'Initializing...' };
      }
@@ -697,8 +761,9 @@ export default function Home() {
                         <TableCaption>Your recent GoFile recording links (stored in browser cookies).</TableCaption>
                         <TableHeader>
                             <TableRow>
-                                <TableHead className="w-[40%]">Filename</TableHead>
-                                <TableHead className="w-[30%]">Recorded On</TableHead>
+                                <TableHead className="w-[35%]">Filename</TableHead>
+                                <TableHead className="w-[25%]">Recorded On</TableHead>
+                                <TableHead className="w-[10%] text-center">Media</TableHead>
                                 <TableHead className="text-center w-[15%]">Link</TableHead>
                                 <TableHead className="text-right w-[15%]">Actions</TableHead>
                             </TableRow>
@@ -710,6 +775,10 @@ export default function Home() {
                                         {link.filename}
                                     </TableCell>
                                     <TableCell>{new Date(link.timestamp).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center">
+                                        {/* Basic media type icon - more advanced parsing could be done */}
+                                        <Video className="h-5 w-5 inline-block text-muted-foreground" />
+                                    </TableCell>
                                     <TableCell className="text-center">
                                         <a
                                             href={link.url}
@@ -761,3 +830,4 @@ function mimeTypeToExtension(mimeType?: string | null): string {
     // Add more mappings if needed for other types (e.g., 'ogg', 'mov')
     return 'webm'; // Fallback
 }
+
