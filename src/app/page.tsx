@@ -5,8 +5,10 @@ import { useState, useRef, useEffect } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
-import { Toaster, toast as sonnerToast } from 'sonner'; // Use sonner directly for toasts
+import { Toaster, toast as sonnerToast } from 'sonner';
 import { cn } from "@/lib/utils";
+import { uploadToGoFile } from "@/services/gofile"; // Import the GoFile service
+import { Loader2 } from "lucide-react"; // Import Loader icon
 
 // Define available resolutions
 const resolutions = [
@@ -33,24 +35,20 @@ const defaultLowEndFrameRate = 30;
 // Helper function to check MediaRecorder support
 const isMediaRecorderSupported = () => typeof MediaRecorder !== 'undefined';
 
-// --- Helper Function to detect low-end device ---
+// Helper Function to detect low-end device
 const isLowEndDevice = (): boolean => {
-  if (typeof navigator === 'undefined') return false; // Cannot detect on server
+  if (typeof navigator === 'undefined') return false;
 
   const cores = navigator.hardwareConcurrency;
-  // const memory = (navigator as any).deviceMemory; // deviceMemory is less reliable/standardized
-
-  // Simple heuristic: Consider device low-end if it has 4 or fewer logical cores
-  // Adjust this threshold based on testing and desired performance trade-off
   if (cores && cores <= 4) {
     console.log(`Detected low-end device (Cores: ${cores})`);
     return true;
   }
-
-  // console.log(`Detected standard/high-end device (Cores: ${cores ?? 'N/A'})`);
   return false;
 };
-// --- End Helper Function ---
+
+// GoFile Account Token (Consider moving to .env.local for security)
+const ACCOUNT_TOKEN = "L8i5S6dbkfKkwpOip6omaExfCuVKY27b";
 
 export default function Home() {
   const [isClient, setIsClient] = useState(false);
@@ -59,28 +57,29 @@ export default function Home() {
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
   const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState<boolean | null>(null);
-  const streamRef = useRef<MediaStream | null>(null); // Ref to store the stream
+  const streamRef = useRef<MediaStream | null>(null);
+  const [mimeType, setMimeType] = useState<string>('video/webm'); // Store mime type
 
-  // Set initial state based on device detection (will be updated in useEffect)
-  const [selectedResolution, setSelectedResolution] = useState(defaultHighEndResolution);
-  const [frameRate, setFrameRate] = useState(defaultHighEndFrameRate);
+  // State for GoFile upload
+  const [isUploading, setIsUploading] = useState(false);
+  const [gofileLink, setGofileLink] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const [isCheckingPermission, setIsCheckingPermission] = useState(true); // Track initial check
+  // Set initial state based on device detection
+  const getInitialResolution = () => isLowEndDevice() ? defaultLowEndResolution : defaultHighEndResolution;
+  const getInitialFrameRate = () => isLowEndDevice() ? defaultLowEndFrameRate : defaultHighEndFrameRate;
+
+  const [selectedResolution, setSelectedResolution] = useState(getInitialResolution);
+  const [frameRate, setFrameRate] = useState(getInitialFrameRate);
+
+  const [isCheckingPermission, setIsCheckingPermission] = useState(true);
 
   useEffect(() => {
-    setIsClient(true); // Indicate component has mounted on the client
+    setIsClient(true);
 
-    // --- Device Performance Check and Default Setting ---
-    const lowEnd = isLowEndDevice();
-    if (lowEnd) {
-      setSelectedResolution(defaultLowEndResolution);
-      setFrameRate(defaultLowEndFrameRate);
-    } else {
-      setSelectedResolution(defaultHighEndResolution);
-      setFrameRate(defaultHighEndFrameRate);
-    }
-    // --- End Device Check ---
-
+    // Re-evaluate settings on client mount after hydration
+    setSelectedResolution(getInitialResolution());
+    setFrameRate(getInitialFrameRate());
 
     // Function to check display media permission status without prompting
     const checkDisplayMediaPermission = async () => {
@@ -90,16 +89,10 @@ export default function Home() {
       if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
         if (navigator.permissions && navigator.permissions.query) {
             try {
-              // Try querying the permission status first (might not be supported everywhere)
               const permissionStatus = await navigator.permissions.query({ name: 'display-capture' as PermissionName });
 
               if (isMounted) {
-                  if (permissionStatus.state === 'granted') {
-                    setHasDisplayMediaPermission(true);
-                  } else {
-                    // Permission is denied or prompt required
-                    setHasDisplayMediaPermission(false);
-                  }
+                  setHasDisplayMediaPermission(permissionStatus.state === 'granted');
               }
               permissionStatus.onchange = () => {
                 if (isMounted) {
@@ -109,14 +102,12 @@ export default function Home() {
 
             } catch (queryError) {
                console.warn("Permissions API query for display-capture failed:", queryError);
-                // Fallback: Assume permission needs to be requested.
                if (isMounted) {
                  setHasDisplayMediaPermission(false);
                }
             }
         } else {
              console.warn("Permissions API not supported, assuming permission needs to be requested.");
-             // Permissions API not supported, assume we need to ask
              if (isMounted) {
                setHasDisplayMediaPermission(false);
              }
@@ -132,7 +123,7 @@ export default function Home() {
         });
       }
       if (isMounted) {
-        setIsCheckingPermission(false); // Finished check
+        setIsCheckingPermission(false);
       }
 
        return () => {
@@ -142,18 +133,16 @@ export default function Home() {
 
     checkDisplayMediaPermission();
 
-    // Cleanup function
     return () => {
-      // Stop stream if component unmounts while recording
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
-      // Revoke object URL to prevent memory leaks
       if (videoURL) {
         URL.revokeObjectURL(videoURL);
       }
     };
-  }, [videoURL]); // Re-added videoURL dependency for cleanup
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run only once on mount
 
   const startRecording = async () => {
     if (!isClient || !isMediaRecorderSupported()) {
@@ -164,35 +153,34 @@ export default function Home() {
       return;
     }
 
-    setVideoURL(null); // Clear previous recording if any
-    recordedChunks.current = []; // Clear existing chunks
+    setVideoURL(null);
+    setGofileLink(null); // Clear previous GoFile link
+    setUploadError(null); // Clear previous upload error
+    recordedChunks.current = [];
 
     try {
-      // Request permission just before starting if needed
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           width: { ideal: selectedResolution.width, max: selectedResolution.width },
           height: { ideal: selectedResolution.height, max: selectedResolution.height },
           frameRate: { ideal: frameRate, max: frameRate },
-          // cursor: 'always' // Optional: Show cursor
         },
-        audio: true, // Request audio
+        audio: true,
       });
 
-      streamRef.current = stream; // Store the stream
-
-      // Handle inactive stream (e.g., user stops sharing from browser UI)
+      streamRef.current = stream;
       stream.addEventListener('inactive', stopRecording);
 
-      const mimeType = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/webm'].find(
+      const chosenMimeType = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/webm'].find(
         (type) => MediaRecorder.isTypeSupported(type)
       ) || 'video/webm';
-      console.log("Using MIME type:", mimeType);
+      setMimeType(chosenMimeType); // Store the chosen mime type
+      console.log("Using MIME type:", chosenMimeType);
 
       mediaRecorder.current = new MediaRecorder(stream, {
-        mimeType: mimeType,
-        videoBitsPerSecond: selectedResolution.width * selectedResolution.height * frameRate * 0.1, // Rough estimate
-        audioBitsPerSecond: 128000, // 128 kbps for audio
+        mimeType: chosenMimeType,
+        videoBitsPerSecond: selectedResolution.width * selectedResolution.height * frameRate * 0.07, // Adjusted bitrate factor
+        audioBitsPerSecond: 128000,
       });
 
       mediaRecorder.current.ondataavailable = (event) => {
@@ -201,57 +189,82 @@ export default function Home() {
         }
       };
 
-      mediaRecorder.current.onstop = () => {
+      mediaRecorder.current.onstop = async () => {
         if (recordedChunks.current.length === 0) {
           console.warn("No data recorded.");
           setRecording(false);
-          stream.removeEventListener('inactive', stopRecording); // Clean up listener
-          streamRef.current = null; // Clear stream ref
+          stream.removeEventListener('inactive', stopRecording);
+          streamRef.current = null;
           return;
         }
 
-        const blob = new Blob(recordedChunks.current, { type: mimeType });
+        const blob = new Blob(recordedChunks.current, { type: chosenMimeType });
         const url = URL.createObjectURL(blob);
         setVideoURL(url);
         recordedChunks.current = [];
-        stream.removeEventListener('inactive', stopRecording); // Clean up listener
-        streamRef.current = null; // Clear stream ref
+        stream.removeEventListener('inactive', stopRecording);
+        streamRef.current = null;
         setRecording(false);
+
+        // --- Start GoFile Upload ---
+        setIsUploading(true);
+        setUploadError(null);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps-${timestamp}.${mimeTypeToExtension(chosenMimeType)}`;
+
+        try {
+            sonnerToast.info("Uploading to GoFile...", { id: 'gofile-upload' });
+            const downloadPage = await uploadToGoFile(blob, filename, ACCOUNT_TOKEN);
+            if (downloadPage) {
+                setGofileLink(downloadPage);
+                sonnerToast.success("Upload successful!", { description: "Video uploaded to GoFile.", id: 'gofile-upload', duration: 4000 });
+            } else {
+                throw new Error("GoFile API did not return a download page.");
+            }
+        } catch (error: any) {
+            console.error("GoFile upload failed:", error);
+            const errorMessage = error instanceof Error ? error.message : "An unknown error occurred during upload.";
+            setUploadError(`GoFile upload failed: ${errorMessage}`);
+            sonnerToast.error("GoFile Upload Failed", { description: errorMessage, id: 'gofile-upload', duration: 6000 });
+        } finally {
+            setIsUploading(false);
+        }
+        // --- End GoFile Upload ---
       };
 
       mediaRecorder.current.onerror = (event: Event) => {
         console.error("MediaRecorder error:", event);
-        // Try to access specific error if possible (DOMError in some browsers)
         let errorMessage = "An error occurred during recording.";
-        if (event instanceof ErrorEvent && event.error) {
-             errorMessage = `Recording error: ${event.error.name} - ${event.error.message}`;
-        } else if ((event as any).error) { // Fallback for older event structures
-             const err = (event as any).error;
-             errorMessage = `Recording error: ${err.name || 'Unknown'} - ${err.message || 'No message'}`;
-        }
+        // Extract specific error details if possible
+        try {
+            if ((event as any).error) {
+                const err = (event as any).error;
+                errorMessage = `Recording error: ${err.name || 'Unknown'} - ${err.message || 'No message'}`;
+            }
+        } catch (e) { /* Ignore extraction error */ }
 
         sonnerToast.error("Recording Error", {
           description: errorMessage,
           duration: 5000,
         });
-        stopRecording(); // Attempt to stop gracefully
+        stopRecording();
       };
 
-      mediaRecorder.current.start(100); // Collect data frequently
+      mediaRecorder.current.start(1000); // Collect data every second
       setRecording(true);
-      setHasDisplayMediaPermission(true); // Assume permission granted if getDisplayMedia succeeded
+      setHasDisplayMediaPermission(true);
 
     } catch (error: any) {
       console.error("Error starting recording stream:", error);
-      setHasDisplayMediaPermission(false); // Permission likely denied or failed
+      setHasDisplayMediaPermission(false);
       if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
         sonnerToast.error("Permission Required", {
           description: "Can't start recording. Please grant screen recording permissions.",
           duration: 5000,
         });
-      } else if (error.message?.includes("permissions policy")) {
+      } else if (error.message?.includes("permissions policy") || error.name === 'NotSupportedError') {
           sonnerToast.error("Recording Unavailable", {
-              description: "Can't start recording here due to browser or website restrictions (Permissions Policy).",
+              description: "Can't start recording here due to browser or website restrictions (Permissions Policy or unsupported operation).",
               duration: 6000,
           });
       } else {
@@ -260,7 +273,6 @@ export default function Home() {
           duration: 5000,
         });
       }
-      // Ensure recording state is false if start failed
       setRecording(false);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
@@ -271,19 +283,24 @@ export default function Home() {
 
   const stopRecording = () => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
-      mediaRecorder.current.requestData(); // Request final data
-      mediaRecorder.current.stop();
+      mediaRecorder.current.stop(); // onstop handler will process chunks
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current.removeEventListener('inactive', stopRecording); // Clean up listener
+      streamRef.current.removeEventListener('inactive', stopRecording);
     }
-    streamRef.current = null; // Clear stream ref
-    // onstop handler will set recording to false
+    streamRef.current = null;
+    // onstop handler will set recording to false and handle upload
   };
 
-  // Render loading state during SSR and initial client mount before hydration check completes
-  if (!isClient) {
+  // Suppress hydration warning for initial client-side check
+  useEffect(() => {
+      setIsClient(true);
+  }, []);
+
+
+  // Render loading state during SSR or initial client check
+  if (!isClient || isCheckingPermission) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
         <h1 className="text-3xl font-bold mb-6 text-primary">Resolution Recorder</h1>
@@ -292,10 +309,13 @@ export default function Home() {
             <CardTitle className="text-xl text-center">Recording Settings</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 p-0">
-            <div className="text-center text-muted-foreground">Loading settings...</div>
+            <div className="text-center text-muted-foreground">Loading...</div>
           </CardContent>
           <CardFooter className="flex justify-center pt-6 p-0">
-            <Button className="w-full" disabled>Loading...</Button>
+            <Button className="w-full" disabled>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Loading...
+            </Button>
           </CardFooter>
         </Card>
       </div>
@@ -303,9 +323,9 @@ export default function Home() {
   }
 
    const getButtonState = () => {
-     if (isCheckingPermission) return { disabled: true, text: 'Checking Permissions...' };
-     // Let the startRecording function handle the permission request/check on click
+     // Don't disable just for permission check, let startRecording handle it
      if (recording) return { disabled: false, text: 'Stop Recording' };
+     if (isUploading) return { disabled: true, text: 'Uploading...' };
      return { disabled: false, text: 'Start Recording' };
    };
 
@@ -329,7 +349,7 @@ export default function Home() {
                 const res = resolutions.find((r) => r.label === value);
                 if (res) setSelectedResolution(res);
               }}
-              disabled={recording}
+              disabled={recording || isUploading}
             >
               <SelectTrigger id="resolution" className="w-full">
                 <SelectValue placeholder="Select resolution..." />
@@ -349,7 +369,7 @@ export default function Home() {
             <Select
               value={frameRate.toString()}
               onValueChange={(value) => setFrameRate(parseInt(value))}
-              disabled={recording}
+              disabled={recording || isUploading}
             >
               <SelectTrigger id="frameRate" className="w-full">
                 <SelectValue placeholder="Select frame rate..." />
@@ -374,12 +394,40 @@ export default function Home() {
             disabled={buttonState.disabled}
             aria-label={recording ? "Stop screen recording" : "Start screen recording"}
           >
+            {isUploading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {buttonState.text}
           </Button>
         </CardFooter>
       </Card>
 
-      {videoURL && (
+      {/* Display GoFile link or local download based on availability */}
+      {gofileLink && (
+        <div className="mt-8 w-full max-w-2xl text-center">
+           <h2 className="text-xl font-semibold mb-3">Upload Complete</h2>
+           <p className="mb-2">Your video has been uploaded:</p>
+           <a
+             href={gofileLink}
+             target="_blank"
+             rel="noopener noreferrer"
+             className="block text-accent hover:underline font-medium break-all"
+           >
+             {gofileLink}
+           </a>
+           {/* Keep local download as a fallback */}
+           {videoURL && (
+             <a
+                href={videoURL}
+                download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
+                className="block mt-4 text-sm text-muted-foreground hover:underline"
+             >
+               Download Locally (Fallback)
+             </a>
+           )}
+        </div>
+      )}
+
+      {/* Show local preview/download only if GoFile upload hasn't happened or failed */}
+      {!gofileLink && videoURL && (
         <div className="mt-8 w-full max-w-2xl">
           <h2 className="text-xl font-semibold mb-3 text-center">Recording Preview</h2>
           <video
@@ -389,13 +437,21 @@ export default function Home() {
           />
           <a
             href={videoURL}
-            download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mediaRecorder.current?.mimeType)}`}
+            download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
             className="block mt-4 text-center text-accent hover:underline font-medium"
           >
-            Download Video ({selectedResolution.label.split(' ')[0]}, {frameRate}fps)
+            Download Locally ({selectedResolution.label.split(' ')[0]}, {frameRate}fps)
           </a>
         </div>
       )}
+
+      {/* Display upload error if any */}
+       {uploadError && (
+          <div className="mt-4 w-full max-w-md text-center p-3 bg-destructive/10 border border-destructive text-destructive rounded-md">
+             <p className="font-medium">Upload Failed</p>
+             <p className="text-sm">{uploadError}</p>
+          </div>
+       )}
     </div>
   );
 }
@@ -405,6 +461,5 @@ function mimeTypeToExtension(mimeType?: string | null): string {
     if (!mimeType) return 'webm'; // Default
     if (mimeType.includes('mp4')) return 'mp4';
     if (mimeType.includes('webm')) return 'webm';
-    // Add other mappings as needed
     return 'webm'; // Fallback
 }
