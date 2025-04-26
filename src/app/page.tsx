@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Button, buttonVariants } from "@/components/ui/button"; // Correctly import buttonVariants
@@ -174,13 +175,12 @@ export default function Home() {
       const checkDisplayMediaPermission = async () => {
           let isMounted = true;
           setIsCheckingPermission(true);
-          let permissionGranted = false; // Track permission state locally
+          let permissionGranted: boolean | null = null; // Track permission state locally
 
           if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
               if (navigator.permissions && navigator.permissions.query) {
                   try {
                       // Query for display-capture permission status
-                      // Use 'display-capture' as the standard name
                       const permissionStatus = await navigator.permissions.query({ name: 'display-capture' as PermissionName });
 
                       if (isMounted) {
@@ -188,13 +188,16 @@ export default function Home() {
                            permissionGranted = permissionStatus.state === 'granted';
                            setHasDisplayMediaPermission(permissionGranted);
 
-                           // If permission denied, show toast immediately
-                           if (permissionStatus.state === 'denied') {
-                               sonnerToast.error("Screen Recording Denied", {
-                                  description: "Permission was previously denied. Please enable it in your browser settings.",
-                                  duration: 7000,
-                               });
-                           }
+                           // Show informative toast based on state
+                            if (permissionStatus.state === 'denied') {
+                                sonnerToast.error("Screen Recording Denied", {
+                                    description: "Permission was previously denied. Please enable it in your browser settings.",
+                                    duration: 7000,
+                                });
+                            } else if (permissionStatus.state === 'prompt') {
+                                // Don't show a toast here, let the user initiate the prompt by clicking the button
+                                console.log("Screen recording permission requires prompt.");
+                            }
                       }
 
                       // Listen for changes in permission status
@@ -215,46 +218,26 @@ export default function Home() {
 
                   } catch (queryError: any) {
                       console.warn("Permissions API query for display-capture failed:", queryError);
-                      // Fallback check: See if getDisplayMedia itself throws a permissions policy error immediately
-                       try {
-                           // Try to briefly request and immediately stop - this might reveal policy issues
-                           // IMPORTANT: DO NOT actually call getDisplayMedia here on page load.
-                           // We rely on the user clicking the button to initiate the request.
-                           // Assume permission needs prompting if query fails.
-                           if (isMounted) setHasDisplayMediaPermission(false); // Assume prompt needed
-                           permissionGranted = false;
-                           console.log("Assuming prompt needed as permission query failed.");
-
-                       } catch (displayError: any) { // This catch block might not be reached if we don't call getDisplayMedia
-                           if (isMounted) {
-                               if (displayError.name === 'NotAllowedError' && displayError.message?.includes('permissions policy')) {
-                                   console.warn("Permissions policy likely disallows getDisplayMedia.");
-                                   sonnerToast.error("Recording Unavailable", {
-                                       description: "Can't start recording here due to browser security policy (e.g., in an iframe).",
-                                       duration: 7000,
-                                   });
-                                   setHasDisplayMediaPermission(false); // Policy issue = effectively no permission
-                                   permissionGranted = false;
-                               } else {
-                                   // Other error during check, assume prompt needed
-                                   setHasDisplayMediaPermission(false);
-                                   permissionGranted = false;
-                               }
-                           }
+                      // Fallback: Assume permission needs prompting if query fails.
+                      // We can't reliably check for policy errors without attempting getDisplayMedia.
+                       if (isMounted) {
+                            setHasDisplayMediaPermission(null); // Set to null (undetermined) instead of false
+                            permissionGranted = null;
+                            console.log("Assuming prompt needed as permission query failed.");
                        }
                   }
               } else {
                   console.warn("Permissions API not fully supported, assuming permission needs to be requested.");
                    if (isMounted) {
-                      setHasDisplayMediaPermission(false); // Assume false, requires user action
-                      permissionGranted = false;
+                      setHasDisplayMediaPermission(null); // Assume undetermined
+                      permissionGranted = null;
                   }
               }
 
           } else {
               console.warn("Screen Capture API not fully supported in this browser.");
               if (isMounted) {
-                  setHasDisplayMediaPermission(false); // Assume false if API not supported
+                  setHasDisplayMediaPermission(false); // API not supported = effectively no permission
               }
               permissionGranted = false;
               sonnerToast.error("Unsupported Browser", {
@@ -265,7 +248,7 @@ export default function Home() {
 
            if (isMounted) {
               setIsCheckingPermission(false);
-              console.log("Finished checking permissions, determined granted state:", hasDisplayMediaPermission); // Use state here
+              console.log("Finished checking permissions, determined granted state:", hasDisplayMediaPermission); // Log the final state set
           }
 
           return () => {
@@ -567,39 +550,52 @@ export default function Home() {
   };
 
   // --- Preview Modal ---
-  const openPreviewModal = async (gofileUrl: string, linkFilename: string) => {
-      if (isLoadingPreview) return; // Prevent multiple fetches
+    const openPreviewModal = async (gofileUrl: string, linkFilename: string) => {
+        if (isLoadingPreview) return; // Prevent multiple fetches
 
-      console.log("Attempting to open preview for:", gofileUrl);
-      setLoadingPreviewUrl(gofileUrl); // Track which link is loading
-      setIsLoadingPreview(true);
-      setPreviewVideoUrl(null); // Clear previous preview
-      setIsPreviewModalOpen(true); // Open modal immediately to show loader
+        console.log("Attempting to open preview for:", gofileUrl);
+        setLoadingPreviewUrl(gofileUrl); // Track which link is loading
+        setIsLoadingPreview(true);
+        setPreviewVideoUrl(null); // Clear previous preview
+        setIsPreviewModalOpen(true); // Open modal immediately to show loader
 
-      try {
-          // Call the API route to get the actual media URL
-          const response = await fetch(`/api/download?url=${encodeURIComponent(gofileUrl)}`);
+        try {
+            // Call the API route to get the actual media URL
+            const response = await fetch(`/api/download?url=${encodeURIComponent(gofileUrl)}`);
 
-          if (!response.ok) {
-              const errorData = await response.json();
-              throw new Error(errorData.error || `Failed to fetch preview data (status ${response.status})`);
-          }
+            if (!response.ok) {
+                let errorMessage = `Failed to fetch preview data (status ${response.status})`;
+                 try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error || errorMessage;
+                 } catch (e) {
+                    // If the error response is not JSON, try to read as text
+                    try {
+                        const errorText = await response.text();
+                        errorMessage = errorText || errorMessage;
+                        console.warn("Non-JSON error response from API:", errorText);
+                    } catch (textErr) {
+                        console.error("Could not read error response body:", textErr);
+                    }
+                 }
+                throw new Error(errorMessage);
+            }
 
-          // Get the media blob from the response
-          const blob = await response.blob();
-          const mediaUrl = URL.createObjectURL(blob);
-          setPreviewVideoUrl(mediaUrl);
-          console.log("Preview media URL obtained:", mediaUrl);
+            // Get the media blob from the response
+            const blob = await response.blob();
+            const mediaUrl = URL.createObjectURL(blob);
+            setPreviewVideoUrl(mediaUrl);
+            console.log("Preview media URL obtained:", mediaUrl);
 
-      } catch (error: any) {
-          console.error("Error fetching preview:", error);
-          sonnerToast.error("Preview Failed", { description: error.message || "Could not load video preview." });
-          setIsPreviewModalOpen(false); // Close modal on error
-      } finally {
-          setIsLoadingPreview(false);
-          setLoadingPreviewUrl(null); // Clear loading tracker
-      }
-  };
+        } catch (error: any) {
+            console.error("Error fetching preview:", error);
+            sonnerToast.error("Preview Failed", { description: error.message || "Could not load video preview." });
+            setIsPreviewModalOpen(false); // Close modal on error
+        } finally {
+            setIsLoadingPreview(false);
+            setLoadingPreviewUrl(null); // Clear loading tracker
+        }
+    };
 
 
   // Render loading state until client is ready and initial settings are determined

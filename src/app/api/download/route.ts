@@ -1,7 +1,7 @@
 // app/api/download/route.ts
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio'; // Changed from default import to namespace import
 
 // Define a type for the error response for better clarity
 interface ErrorResponse {
