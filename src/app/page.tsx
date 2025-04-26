@@ -6,10 +6,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog"; // Import Dialog components
 import { toast as sonnerToast } from 'sonner'; // Import Sonner Toaster directly
 import { cn } from "@/lib/utils";
 import { uploadToGoFile } from "@/services/gofile"; // Import the GoFile service
-import { Loader2, Copy, Trash2, Video } from "lucide-react"; // Import Loader, Copy, Trash, and Video icons
+import { Loader2, Copy, Trash2, Video, PlayCircle } from "lucide-react"; // Import Loader, Copy, Trash, Video, and PlayCircle icons
 import { getCookie, setCookie, deleteCookie } from 'cookies-next'; // Use cookies-next for easier cookie management
 
 // Define available resolutions
@@ -93,6 +94,13 @@ export default function Home() {
 
 
   const [isCheckingPermission, setIsCheckingPermission] = useState(true);
+
+  // State for Preview Modal
+  const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const [loadingPreviewUrl, setLoadingPreviewUrl] = useState<string | null>(null); // Track which link is loading
+
 
   // --- Cookie Helper Functions ---
    const loadLinksFromCookie = (): GoFileLinkData[] => {
@@ -210,12 +218,14 @@ export default function Home() {
                       // Fallback check: See if getDisplayMedia itself throws a permissions policy error immediately
                        try {
                            // Try to briefly request and immediately stop - this might reveal policy issues
-                           const tempStream = await navigator.mediaDevices.getDisplayMedia({ video: { width: 1, height: 1 }, audio: false }); // minimal request
-                           tempStream.getTracks().forEach(track => track.stop());
-                           // If this succeeds without error, assume permission is possible (prompt needed)
-                           if (isMounted) setHasDisplayMediaPermission(false);
+                           // IMPORTANT: DO NOT actually call getDisplayMedia here on page load.
+                           // We rely on the user clicking the button to initiate the request.
+                           // Assume permission needs prompting if query fails.
+                           if (isMounted) setHasDisplayMediaPermission(false); // Assume prompt needed
                            permissionGranted = false;
-                       } catch (displayError: any) {
+                           console.log("Assuming prompt needed as permission query failed.");
+
+                       } catch (displayError: any) { // This catch block might not be reached if we don't call getDisplayMedia
                            if (isMounted) {
                                if (displayError.name === 'NotAllowedError' && displayError.message?.includes('permissions policy')) {
                                    console.warn("Permissions policy likely disallows getDisplayMedia.");
@@ -255,7 +265,7 @@ export default function Home() {
 
            if (isMounted) {
               setIsCheckingPermission(false);
-              console.log("Finished checking permissions, granted:", permissionGranted);
+              console.log("Finished checking permissions, determined granted state:", hasDisplayMediaPermission); // Use state here
           }
 
           return () => {
@@ -273,6 +283,9 @@ export default function Home() {
           }
           if (videoURL) {
               URL.revokeObjectURL(videoURL);
+          }
+          if (previewVideoUrl) {
+              URL.revokeObjectURL(previewVideoUrl); // Clean up preview URL too
           }
       };
   }, []); // Empty dependency array ensures this runs only once on mount
@@ -372,12 +385,17 @@ export default function Home() {
 
       mediaRecorder.current.onstop = async () => {
         // Ensure cleanup runs only once
-        if (!streamRef.current && recordedChunks.current.length === 0) {
-            console.log("MediaRecorder stopped, but no stream or chunks. Exiting onstop.");
-            setRecording(false); // Ensure state is correct
+        if (!streamRef.current && recordedChunks.current.length === 0 && !recording) { // Added !recording check
+            console.log("MediaRecorder stopped, but no stream or chunks, and not currently recording. Exiting onstop.");
+            // No need to set recording to false if it wasn't recording
             return;
         }
+
         console.log("MediaRecorder stopped. Processing recording...");
+
+        // Store recording state before async operations
+        const wasRecording = recording;
+        setRecording(false); // Update recording state immediately after stop signal
 
         // Clean up stream listeners and tracks if the stream still exists
         if (streamRef.current) {
@@ -391,11 +409,12 @@ export default function Home() {
             streamRef.current = null; // Indicate stream is stopped
         }
 
-        setRecording(false); // Update recording state
 
         if (recordedChunks.current.length === 0) {
           console.warn("No data recorded.");
-          sonnerToast.warning("No Data Recorded", { description: "The recording was stopped before any data was captured." });
+          if (wasRecording) { // Only show warning if we were actually recording
+             sonnerToast.warning("No Data Recorded", { description: "The recording was stopped before any data was captured." });
+          }
           return; // Nothing to process
         }
 
@@ -516,6 +535,7 @@ export default function Home() {
        console.log("Stopping MediaRecorder.");
        try {
            mediaRecorder.current.stop(); // The onstop handler will manage the rest
+           sonnerToast.info("Recording Stopped", { description: "Processing video...", duration: 2000 });
        } catch (e) {
            console.error("Error stopping MediaRecorder:", e);
             // Force cleanup if stop fails
@@ -537,11 +557,48 @@ export default function Home() {
     } else {
         console.log("No active recording or stream to stop.");
         // Ensure state consistency if called multiple times or unexpectedly
-        setRecording(false);
+        if (recording) { // Only update state if it thinks it's recording
+          setRecording(false);
+        }
         if (mediaRecorder.current?.state && mediaRecorder.current.state !== "inactive") {
            console.warn(`MediaRecorder state is: ${mediaRecorder.current.state}, but stop wasn't triggered correctly.`);
         }
     }
+  };
+
+  // --- Preview Modal ---
+  const openPreviewModal = async (gofileUrl: string, linkFilename: string) => {
+      if (isLoadingPreview) return; // Prevent multiple fetches
+
+      console.log("Attempting to open preview for:", gofileUrl);
+      setLoadingPreviewUrl(gofileUrl); // Track which link is loading
+      setIsLoadingPreview(true);
+      setPreviewVideoUrl(null); // Clear previous preview
+      setIsPreviewModalOpen(true); // Open modal immediately to show loader
+
+      try {
+          // Call the API route to get the actual media URL
+          const response = await fetch(`/api/download?url=${encodeURIComponent(gofileUrl)}`);
+
+          if (!response.ok) {
+              const errorData = await response.json();
+              throw new Error(errorData.error || `Failed to fetch preview data (status ${response.status})`);
+          }
+
+          // Get the media blob from the response
+          const blob = await response.blob();
+          const mediaUrl = URL.createObjectURL(blob);
+          setPreviewVideoUrl(mediaUrl);
+          console.log("Preview media URL obtained:", mediaUrl);
+
+      } catch (error: any) {
+          console.error("Error fetching preview:", error);
+          sonnerToast.error("Preview Failed", { description: error.message || "Could not load video preview." });
+          setIsPreviewModalOpen(false); // Close modal on error
+      } finally {
+          setIsLoadingPreview(false);
+          setLoadingPreviewUrl(null); // Clear loading tracker
+      }
   };
 
 
@@ -588,14 +645,17 @@ export default function Home() {
    const getButtonState = () => {
      if (recording) return { disabled: false, text: 'Stop Recording' };
      if (isUploading) return { disabled: true, text: 'Uploading...' };
-     // Disable button if permission is explicitly denied or not yet determined/checked
+     // Disable button if permission is explicitly denied
      if (hasDisplayMediaPermission === false) {
-        return { disabled: true, text: 'Permissions Required' }; // Or a more specific message
+        return { disabled: true, text: 'Permissions Required' };
      }
-     // Enable button even if permissions might be needed (state is null or true).
-     // Let startRecording handle the prompt/error.
+      // Disable if permission check is still ongoing
+     if (isCheckingPermission) {
+         return { disabled: true, text: 'Checking Permissions...' };
+     }
+     // Enable button if permission is granted (true) or undetermined (null - will prompt)
      if (!selectedResolution || frameRate === null) {
-         return { disabled: true, text: 'Initializing...' };
+         return { disabled: true, text: 'Select Settings' }; // More informative than 'Initializing'
      }
      return { disabled: false, text: 'Start Recording' };
    };
@@ -696,7 +756,7 @@ export default function Home() {
         {videoURL && (
           <Card className="p-4 shadow-md border border-border">
             <CardHeader className="p-0 pb-3">
-              <CardTitle className="text-lg text-center">Recording Preview</CardTitle>
+              <CardTitle className="text-lg text-center">Last Recording Preview</CardTitle>
             </CardHeader>
             <CardContent className="p-0 space-y-3">
               <video
@@ -776,8 +836,21 @@ export default function Home() {
                                     </TableCell>
                                     <TableCell>{new Date(link.timestamp).toLocaleString()}</TableCell>
                                     <TableCell className="text-center">
-                                        {/* Basic media type icon - more advanced parsing could be done */}
-                                        <Video className="h-5 w-5 inline-block text-muted-foreground" />
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-7 w-7"
+                                            onClick={() => openPreviewModal(link.url, link.filename)}
+                                            disabled={isLoadingPreview && loadingPreviewUrl === link.url} // Disable if loading this specific preview
+                                            title="Preview Media"
+                                        >
+                                            {isLoadingPreview && loadingPreviewUrl === link.url ? (
+                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                            ) : (
+                                                <PlayCircle className="h-5 w-5 text-muted-foreground hover:text-accent" />
+                                            )}
+                                            <span className="sr-only">Preview Media</span>
+                                        </Button>
                                     </TableCell>
                                     <TableCell className="text-center">
                                         <a
@@ -818,6 +891,47 @@ export default function Home() {
                 </CardContent>
             </Card>
         )}
+
+        {/* Preview Modal */}
+        <Dialog open={isPreviewModalOpen} onOpenChange={setIsPreviewModalOpen}>
+          <DialogContent className="sm:max-w-[70vw] max-h-[90vh] flex flex-col"> {/* Adjusted width and height */}
+            <DialogHeader>
+              <DialogTitle>Media Preview</DialogTitle>
+              <DialogDescription>Playing media fetched from GoFile.</DialogDescription>
+            </DialogHeader>
+            <div className="flex-grow flex items-center justify-center overflow-hidden"> {/* Center content and allow growth */}
+              {isLoadingPreview && (
+                <div className="flex flex-col items-center justify-center h-full">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  <p className="mt-2 text-muted-foreground">Loading preview...</p>
+                </div>
+              )}
+              {!isLoadingPreview && previewVideoUrl && (
+                <video
+                  src={previewVideoUrl}
+                  controls
+                  autoPlay
+                  className="max-w-full max-h-[calc(90vh-150px)] rounded-md border border-border" // Limit video size within modal
+                  key={previewVideoUrl} // Force re-render on URL change
+                />
+              )}
+               {!isLoadingPreview && !previewVideoUrl && (
+                 <div className="flex flex-col items-center justify-center h-full text-destructive">
+                   <Video className="h-8 w-8 mb-2" />
+                   <p>Failed to load preview.</p>
+                 </div>
+               )}
+            </div>
+            <DialogFooter className="sm:justify-end">
+              <DialogClose asChild>
+                <Button type="button" variant="secondary">
+                  Close
+                </Button>
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
     </div>
   );
 }
@@ -830,4 +944,3 @@ function mimeTypeToExtension(mimeType?: string | null): string {
     // Add more mappings if needed for other types (e.g., 'ogg', 'mov')
     return 'webm'; // Fallback
 }
-
