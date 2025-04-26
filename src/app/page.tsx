@@ -1,6 +1,6 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button"; // Correctly import buttonVariants
 import { useState, useRef, useEffect } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
@@ -159,28 +159,33 @@ export default function Home() {
           if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
               if (navigator.permissions && navigator.permissions.query) {
                   try {
+                      // Query for display-capture permission status
                       const permissionStatus = await navigator.permissions.query({ name: 'display-capture' as PermissionName });
 
                       if (isMounted) {
-                          setHasDisplayMediaPermission(permissionStatus.state === 'granted');
+                           console.log("Initial display-capture permission state:", permissionStatus.state);
+                           setHasDisplayMediaPermission(permissionStatus.state === 'granted');
                       }
+
+                      // Listen for changes in permission status
                       permissionStatus.onchange = () => {
-                          if (isMounted) {
-                              setHasDisplayMediaPermission(permissionStatus.state === 'granted');
-                          }
+                           if (isMounted) {
+                               console.log("Display-capture permission state changed to:", permissionStatus.state);
+                               setHasDisplayMediaPermission(permissionStatus.state === 'granted');
+                           }
                       };
 
                   } catch (queryError) {
                       console.warn("Permissions API query for display-capture failed:", queryError);
-                      // Don't assume permission denied, let startRecording handle the prompt
+                       // Don't assume permission denied if query fails, let startRecording handle the prompt
                       if (isMounted) {
-                          setHasDisplayMediaPermission(false); // Assume false if query fails
+                          setHasDisplayMediaPermission(false); // Assume false, requires user action
                       }
                   }
               } else {
-                  console.warn("Permissions API not supported, assuming permission needs to be requested.");
-                  if (isMounted) {
-                      setHasDisplayMediaPermission(false); // Assume false if API not supported
+                  console.warn("Permissions API not fully supported, assuming permission needs to be requested.");
+                   if (isMounted) {
+                      setHasDisplayMediaPermission(false); // Assume false, requires user action
                   }
               }
           } else {
@@ -194,7 +199,7 @@ export default function Home() {
               });
           }
 
-          if (isMounted) {
+           if (isMounted) {
               setIsCheckingPermission(false);
           }
 
@@ -314,7 +319,7 @@ export default function Home() {
         setUploadError(null);
         const timestamp = new Date();
         const timestampStr = timestamp.toISOString().replace(/[:.]/g, '-');
-        const filename = `recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps-${timestampStr}.${mimeTypeToExtension(chosenMimeType)}`;
+        const filename = `recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps-${timestampStr}.${mimeTypeToExtension(mimeType)}`;
 
         try {
             sonnerToast.info("Uploading to GoFile...", { id: 'gofile-upload' });
@@ -372,7 +377,7 @@ export default function Home() {
 
       if (error.name === 'NotAllowedError') {
         sonnerToast.error("Permission Required", {
-          description: "Can't start recording. Please grant screen recording permissions and refresh.",
+          description: "Can't start recording. Please grant screen recording permissions.",
           duration: 5000,
         });
       } else if (error.name === 'NotFoundError') {
@@ -540,72 +545,52 @@ export default function Home() {
 
       {/* Display Preview, Upload Status, and Links */}
       <div className="w-full max-w-2xl space-y-6">
-        {/* Display GoFile link */}
-        {gofileLink && !isUploading && (
-            <Card className="p-4 shadow-md border border-border">
-                <CardHeader className="p-0 pb-2">
-                   <CardTitle className="text-lg text-center">Upload Complete</CardTitle>
-                 </CardHeader>
-                 <CardContent className="p-0 space-y-2 text-center">
-                   <p className="text-sm">Your video is available at:</p>
-                   <div className="flex items-center justify-center space-x-2">
-                        <a
-                          href={gofileLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-accent hover:underline font-medium break-all text-sm"
-                          title={gofileLink}
-                        >
-                          {gofileLink.length > 50 ? `${gofileLink.substring(0, 50)}...` : gofileLink}
-                        </a>
-                       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(gofileLink)}>
-                           <Copy className="h-4 w-4" />
-                           <span className="sr-only">Copy link</span>
-                       </Button>
-                   </div>
-                </CardContent>
-                 {/* Keep local download as a fallback/alternative */}
-                 {videoURL && (
-                    <CardFooter className="p-0 pt-3 flex justify-center">
-                        <a
-                            href={videoURL}
-                            download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
-                            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-                        >
-                            Download Locally
-                        </a>
-                    </CardFooter>
-                 )}
-            </Card>
-        )}
-
-        {/* Show local preview/download only if GoFile upload hasn't happened or failed, and not currently uploading */}
-        {!gofileLink && videoURL && !isUploading && (
+        {/* Video Preview - Always show if videoURL exists */}
+        {videoURL && (
           <Card className="p-4 shadow-md border border-border">
-             <CardHeader className="p-0 pb-3">
-               <CardTitle className="text-lg text-center">Recording Ready</CardTitle>
-             </CardHeader>
-             <CardContent className="p-0 space-y-3">
-                <video
-                    src={videoURL}
-                    controls
-                    className="rounded-md shadow-sm w-full aspect-video border border-border"
-                    aria-label="Screen recording preview"
-                />
+            <CardHeader className="p-0 pb-3">
+              <CardTitle className="text-lg text-center">Recording Preview</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 space-y-3">
+              <video
+                src={videoURL}
+                controls
+                className="rounded-md shadow-sm w-full aspect-video border border-border"
+                aria-label="Screen recording preview"
+              />
             </CardContent>
-            <CardFooter className="p-0 pt-4 flex justify-center">
-                <a
-                    href={videoURL}
-                    download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
-                    className={cn(buttonVariants({ variant: "default", size: "sm" }))}
-                >
-                    Download Locally ({selectedResolution.label.split(' ')[0]}, {frameRate}fps)
-                </a>
+            <CardFooter className="p-0 pt-4 flex justify-center gap-4">
+              {/* Local Download Button */}
+              <a
+                href={videoURL}
+                download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                Download Locally
+              </a>
+              {/* GoFile Link Section (if available) */}
+              {gofileLink && !isUploading && (
+                <div className="flex items-center space-x-2">
+                  <a
+                    href={gofileLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-accent hover:underline font-medium text-sm"
+                    title={gofileLink}
+                  >
+                    GoFile Link
+                  </a>
+                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(gofileLink)}>
+                    <Copy className="h-4 w-4" />
+                    <span className="sr-only">Copy GoFile link</span>
+                  </Button>
+                </div>
+              )}
             </CardFooter>
           </Card>
         )}
 
-        {/* Display upload error if any */}
+         {/* Display upload error if any */}
          {uploadError && !isUploading && (
             <Card className="p-3 bg-destructive/10 border border-destructive text-destructive rounded-md text-center">
                 <CardHeader className="p-0 pb-1"><CardTitle className="text-base">Upload Failed</CardTitle></CardHeader>
