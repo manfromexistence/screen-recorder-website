@@ -5,10 +5,12 @@ import { useState, useRef, useEffect } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
 import { Toaster, toast as sonnerToast } from 'sonner';
 import { cn } from "@/lib/utils";
 import { uploadToGoFile } from "@/services/gofile"; // Import the GoFile service
-import { Loader2 } from "lucide-react"; // Import Loader icon
+import { Loader2, Copy, Trash2 } from "lucide-react"; // Import Loader, Copy, and Trash icons
+import { getCookie, setCookie, deleteCookie } from 'cookies-next'; // Use cookies-next for easier cookie management
 
 // Define available resolutions
 const resolutions = [
@@ -38,17 +40,27 @@ const isMediaRecorderSupported = () => typeof MediaRecorder !== 'undefined';
 // Helper Function to detect low-end device
 const isLowEndDevice = (): boolean => {
   if (typeof navigator === 'undefined') return false;
-
+  // Consider devices with 4 or fewer cores or limited memory as potentially low-end
   const cores = navigator.hardwareConcurrency;
-  if (cores && cores <= 4) {
-    console.log(`Detected low-end device (Cores: ${cores})`);
+  const memory = (navigator as any).deviceMemory; // Note: deviceMemory is not universally supported
+
+  if ((cores && cores <= 4) || (memory && memory <= 4)) {
+    console.log(`Detected potential low-end device (Cores: ${cores ?? 'N/A'}, Memory: ${memory ?? 'N/A'}GB)`);
     return true;
   }
   return false;
 };
 
+
 // GoFile Account Token (Consider moving to .env.local for security)
 const ACCOUNT_TOKEN = "L8i5S6dbkfKkwpOip6omaExfCuVKY27b";
+const GOFILE_LINKS_COOKIE_NAME = 'gofileLinks';
+
+interface GoFileLinkData {
+    url: string;
+    timestamp: number;
+    filename: string;
+}
 
 export default function Home() {
   const [isClient, setIsClient] = useState(false);
@@ -64,85 +76,148 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [gofileLink, setGofileLink] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [recordedLinks, setRecordedLinks] = useState<GoFileLinkData[]>([]); // State for stored links
 
   // Set initial state based on device detection
   const getInitialResolution = () => isLowEndDevice() ? defaultLowEndResolution : defaultHighEndResolution;
   const getInitialFrameRate = () => isLowEndDevice() ? defaultLowEndFrameRate : defaultHighEndFrameRate;
 
-  const [selectedResolution, setSelectedResolution] = useState(getInitialResolution);
-  const [frameRate, setFrameRate] = useState(getInitialFrameRate);
+  const [selectedResolution, setSelectedResolution] = useState(() => getInitialResolution());
+  const [frameRate, setFrameRate] = useState(() => getInitialFrameRate());
 
   const [isCheckingPermission, setIsCheckingPermission] = useState(true);
 
-  useEffect(() => {
-    setIsClient(true);
-
-    // Re-evaluate settings on client mount after hydration
-    setSelectedResolution(getInitialResolution());
-    setFrameRate(getInitialFrameRate());
-
-    // Function to check display media permission status without prompting
-    const checkDisplayMediaPermission = async () => {
-      let isMounted = true;
-      setIsCheckingPermission(true);
-
-      if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-        if (navigator.permissions && navigator.permissions.query) {
-            try {
-              const permissionStatus = await navigator.permissions.query({ name: 'display-capture' as PermissionName });
-
-              if (isMounted) {
-                  setHasDisplayMediaPermission(permissionStatus.state === 'granted');
-              }
-              permissionStatus.onchange = () => {
-                if (isMounted) {
-                   setHasDisplayMediaPermission(permissionStatus.state === 'granted');
-                }
-              };
-
-            } catch (queryError) {
-               console.warn("Permissions API query for display-capture failed:", queryError);
-               if (isMounted) {
-                 setHasDisplayMediaPermission(false);
+  // --- Cookie Helper Functions ---
+   const loadLinksFromCookie = (): GoFileLinkData[] => {
+       const cookieValue = getCookie(GOFILE_LINKS_COOKIE_NAME);
+       if (typeof cookieValue === 'string') {
+           try {
+               const parsedLinks = JSON.parse(cookieValue);
+               // Basic validation
+               if (Array.isArray(parsedLinks) && parsedLinks.every(link => typeof link === 'object' && link.url && link.timestamp && link.filename)) {
+                   return parsedLinks;
                }
-            }
-        } else {
-             console.warn("Permissions API not supported, assuming permission needs to be requested.");
-             if (isMounted) {
-               setHasDisplayMediaPermission(false);
-             }
-        }
-      } else {
-        console.warn("Screen Capture API not fully supported in this browser.");
-        if (isMounted) {
-          setHasDisplayMediaPermission(false);
-        }
-        sonnerToast.error("Unsupported Browser", {
-            description: "Screen recording features are not available in your current browser.",
-            duration: 5000,
-        });
-      }
-      if (isMounted) {
-        setIsCheckingPermission(false);
-      }
+           } catch (error) {
+               console.error("Error parsing gofileLinks cookie:", error);
+               // If parsing fails, delete the corrupted cookie
+               deleteCookie(GOFILE_LINKS_COOKIE_NAME);
+           }
+       }
+       return [];
+   };
 
-       return () => {
-         isMounted = false;
-       };
+   const saveLinksToCookie = (links: GoFileLinkData[]) => {
+       try {
+           const cookieValue = JSON.stringify(links);
+           setCookie(GOFILE_LINKS_COOKIE_NAME, cookieValue, {
+               maxAge: 60 * 60 * 24 * 365, // 1 year expiry
+               path: '/',
+               sameSite: 'lax',
+           });
+       } catch (error) {
+           console.error("Error saving gofileLinks cookie:", error);
+           sonnerToast.error("Cookie Error", { description: "Could not save recording history." });
+       }
+   };
+
+   const addLinkToCookie = (newLink: GoFileLinkData) => {
+       const currentLinks = loadLinksFromCookie();
+       // Prevent duplicates (optional, based on URL)
+       if (!currentLinks.some(link => link.url === newLink.url)) {
+            const updatedLinks = [newLink, ...currentLinks].slice(0, 50); // Keep latest 50 links to manage cookie size
+            setRecordedLinks(updatedLinks); // Update state immediately
+            saveLinksToCookie(updatedLinks);
+       }
+   };
+
+    const deleteLinkFromCookie = (urlToDelete: string) => {
+        const currentLinks = loadLinksFromCookie();
+        const updatedLinks = currentLinks.filter(link => link.url !== urlToDelete);
+        setRecordedLinks(updatedLinks); // Update state
+        saveLinksToCookie(updatedLinks); // Update cookie
+        sonnerToast.info("Recording deleted from history.");
     };
 
-    checkDisplayMediaPermission();
 
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-      if (videoURL) {
-        URL.revokeObjectURL(videoURL);
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run only once on mount
+  // --- Effects ---
+  useEffect(() => {
+      // This effect runs only once on the client after hydration
+      setIsClient(true);
+
+      // Re-evaluate settings on client mount after hydration
+      setSelectedResolution(getInitialResolution());
+      setFrameRate(getInitialFrameRate());
+
+      // Load links from cookie
+      setRecordedLinks(loadLinksFromCookie());
+
+      // Function to check display media permission status without prompting
+      const checkDisplayMediaPermission = async () => {
+          let isMounted = true;
+          setIsCheckingPermission(true);
+
+          if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+              if (navigator.permissions && navigator.permissions.query) {
+                  try {
+                      const permissionStatus = await navigator.permissions.query({ name: 'display-capture' as PermissionName });
+
+                      if (isMounted) {
+                          setHasDisplayMediaPermission(permissionStatus.state === 'granted');
+                      }
+                      permissionStatus.onchange = () => {
+                          if (isMounted) {
+                              setHasDisplayMediaPermission(permissionStatus.state === 'granted');
+                          }
+                      };
+
+                  } catch (queryError) {
+                      console.warn("Permissions API query for display-capture failed:", queryError);
+                      // Don't assume permission denied, let startRecording handle the prompt
+                      if (isMounted) {
+                          setHasDisplayMediaPermission(false); // Assume false if query fails
+                      }
+                  }
+              } else {
+                  console.warn("Permissions API not supported, assuming permission needs to be requested.");
+                  if (isMounted) {
+                      setHasDisplayMediaPermission(false); // Assume false if API not supported
+                  }
+              }
+          } else {
+              console.warn("Screen Capture API not fully supported in this browser.");
+              if (isMounted) {
+                  setHasDisplayMediaPermission(false); // Assume false if API not supported
+              }
+              sonnerToast.error("Unsupported Browser", {
+                  description: "Screen recording features are not available in your current browser.",
+                  duration: 5000,
+              });
+          }
+
+          if (isMounted) {
+              setIsCheckingPermission(false);
+          }
+
+          return () => {
+              isMounted = false;
+          };
+      };
+
+
+      checkDisplayMediaPermission();
+
+      return () => {
+          // Cleanup stream and video URL on unmount
+          if (streamRef.current) {
+              streamRef.current.getTracks().forEach(track => track.stop());
+          }
+          if (videoURL) {
+              URL.revokeObjectURL(videoURL);
+          }
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array ensures this runs only once on mount
+
 
   const startRecording = async () => {
     if (!isClient || !isMediaRecorderSupported()) {
@@ -164,23 +239,41 @@ export default function Home() {
           width: { ideal: selectedResolution.width, max: selectedResolution.width },
           height: { ideal: selectedResolution.height, max: selectedResolution.height },
           frameRate: { ideal: frameRate, max: frameRate },
+          cursor: 'always' // Keep cursor visible
         },
-        audio: true,
+        audio: true, // Request audio
+        // preferCurrentTab: true // Optional: hint to prefer the current tab
       });
 
       streamRef.current = stream;
-      stream.addEventListener('inactive', stopRecording);
+      // Listen for the user stopping the share via browser UI
+      stream.getVideoTracks()[0].onended = stopRecording;
+      stream.addEventListener('inactive', stopRecording); // Fallback listener
 
-      const chosenMimeType = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=h264,opus', 'video/webm;codecs=vp8,opus', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/webm'].find(
-        (type) => MediaRecorder.isTypeSupported(type)
-      ) || 'video/webm';
+      // Prefer VP9 or H.264 with Opus audio if available for better compatibility/quality
+      const chosenMimeType = [
+          'video/webm;codecs=vp9,opus',
+          'video/webm;codecs=h264,opus',
+          'video/mp4;codecs=avc1.42E01E,mp4a.40.2', // MP4 fallback
+          'video/webm;codecs=vp8,opus',
+          'video/webm' // Generic webm
+        ].find(
+            (type) => MediaRecorder.isTypeSupported(type)
+        ) || 'video/webm'; // Default fallback
+
       setMimeType(chosenMimeType); // Store the chosen mime type
       console.log("Using MIME type:", chosenMimeType);
 
+      // Calculate a reasonable bitrate based on resolution and frame rate
+      // Factors adjusted based on experimentation for balance.
+      // ~0.1 bits per pixel per frame seems reasonable for screen content.
+      const videoBitrate = selectedResolution.width * selectedResolution.height * frameRate * 0.1;
+      const audioBitrate = 128000; // Standard 128kbps for audio
+
       mediaRecorder.current = new MediaRecorder(stream, {
         mimeType: chosenMimeType,
-        videoBitsPerSecond: selectedResolution.width * selectedResolution.height * frameRate * 0.07, // Adjusted bitrate factor
-        audioBitsPerSecond: 128000,
+        videoBitsPerSecond: videoBitrate,
+        audioBitsPerSecond: audioBitrate,
       });
 
       mediaRecorder.current.ondataavailable = (event) => {
@@ -190,33 +283,46 @@ export default function Home() {
       };
 
       mediaRecorder.current.onstop = async () => {
+        // Ensure cleanup runs only once
+        if (!streamRef.current) return;
+
+        console.log("MediaRecorder stopped.");
+
+        // Clean up stream listeners
+        stream.removeEventListener('inactive', stopRecording);
+        if (stream.getVideoTracks()[0]) {
+            stream.getVideoTracks()[0].onended = null;
+        }
+
+        streamRef.current = null; // Indicate stream is stopped
+        setRecording(false); // Update recording state
+
+
         if (recordedChunks.current.length === 0) {
           console.warn("No data recorded.");
-          setRecording(false);
-          stream.removeEventListener('inactive', stopRecording);
-          streamRef.current = null;
-          return;
+          return; // Nothing to process
         }
 
         const blob = new Blob(recordedChunks.current, { type: chosenMimeType });
         const url = URL.createObjectURL(blob);
-        setVideoURL(url);
-        recordedChunks.current = [];
-        stream.removeEventListener('inactive', stopRecording);
-        streamRef.current = null;
-        setRecording(false);
+        setVideoURL(url); // Set local preview URL
+        recordedChunks.current = []; // Clear chunks immediately
+
 
         // --- Start GoFile Upload ---
         setIsUploading(true);
         setUploadError(null);
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const filename = `recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps-${timestamp}.${mimeTypeToExtension(chosenMimeType)}`;
+        const timestamp = new Date();
+        const timestampStr = timestamp.toISOString().replace(/[:.]/g, '-');
+        const filename = `recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps-${timestampStr}.${mimeTypeToExtension(chosenMimeType)}`;
 
         try {
             sonnerToast.info("Uploading to GoFile...", { id: 'gofile-upload' });
             const downloadPage = await uploadToGoFile(blob, filename, ACCOUNT_TOKEN);
             if (downloadPage) {
-                setGofileLink(downloadPage);
+                setGofileLink(downloadPage); // Set state for immediate UI update
+                // Add the link to cookies
+                addLinkToCookie({ url: downloadPage, timestamp: timestamp.getTime(), filename });
                 sonnerToast.success("Upload successful!", { description: "Video uploaded to GoFile.", id: 'gofile-upload', duration: 4000 });
             } else {
                 throw new Error("GoFile API did not return a download page.");
@@ -235,11 +341,11 @@ export default function Home() {
       mediaRecorder.current.onerror = (event: Event) => {
         console.error("MediaRecorder error:", event);
         let errorMessage = "An error occurred during recording.";
-        // Extract specific error details if possible
+        // Attempt to extract more specific error details
         try {
-            if ((event as any).error) {
-                const err = (event as any).error;
-                errorMessage = `Recording error: ${err.name || 'Unknown'} - ${err.message || 'No message'}`;
+            const mediaRecorderError = event as unknown as { error?: DOMException };
+            if (mediaRecorderError.error) {
+                errorMessage = `Recording error: ${mediaRecorderError.error.name} - ${mediaRecorderError.error.message}`;
             }
         } catch (e) { /* Ignore extraction error */ }
 
@@ -247,32 +353,46 @@ export default function Home() {
           description: errorMessage,
           duration: 5000,
         });
+        // Attempt to stop cleanly if an error occurs
         stopRecording();
       };
 
-      mediaRecorder.current.start(1000); // Collect data every second
+      mediaRecorder.current.start(1000); // Collect data in chunks (e.g., every second)
       setRecording(true);
-      setHasDisplayMediaPermission(true);
+      setHasDisplayMediaPermission(true); // Permission granted implicitly by successful getDisplayMedia
+      sonnerToast.success("Recording Started", {
+          description: `Capturing screen at ${selectedResolution.label}, ${frameRate}fps.`,
+          duration: 3000,
+      });
+
 
     } catch (error: any) {
       console.error("Error starting recording stream:", error);
-      setHasDisplayMediaPermission(false);
-      if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+      setHasDisplayMediaPermission(false); // Explicitly set to false on error
+
+      if (error.name === 'NotAllowedError') {
         sonnerToast.error("Permission Required", {
-          description: "Can't start recording. Please grant screen recording permissions.",
+          description: "Can't start recording. Please grant screen recording permissions and refresh.",
           duration: 5000,
         });
-      } else if (error.message?.includes("permissions policy") || error.name === 'NotSupportedError') {
+      } else if (error.name === 'NotFoundError') {
+          sonnerToast.error("No Screen Found", {
+             description: "No screen or window selected for recording.",
+             duration: 5000,
+          });
+      } else if (error.message?.includes("permissions policy") || error.name === 'NotSupportedError' || error.name === 'SecurityError') {
           sonnerToast.error("Recording Unavailable", {
-              description: "Can't start recording here due to browser or website restrictions (Permissions Policy or unsupported operation).",
+              description: "Can't start recording here due to browser/OS restrictions or security policy.",
               duration: 6000,
           });
       } else {
         sonnerToast.error("Recording Failed", {
-          description: `Could not start recording: ${error.message}`,
+          description: `Could not start recording: ${error.message || 'Unknown error'}`,
           duration: 5000,
         });
       }
+
+      // Ensure state is reset if start fails
       setRecording(false);
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
@@ -282,24 +402,25 @@ export default function Home() {
   };
 
   const stopRecording = () => {
+    console.log("Stop recording requested.");
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
-      mediaRecorder.current.stop(); // onstop handler will process chunks
+       console.log("Stopping MediaRecorder.");
+       mediaRecorder.current.stop(); // The onstop handler will manage the rest
+    } else if (streamRef.current) {
+       // If recorder didn't start or is already stopped, but stream exists
+       console.log("Stopping MediaStream tracks directly.");
+       streamRef.current.getTracks().forEach(track => track.stop());
+       streamRef.current = null;
+       setRecording(false); // Ensure recording state is false
+    } else {
+        console.log("No active recording or stream to stop.");
+        // Ensure state consistency if called multiple times
+        setRecording(false);
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current.removeEventListener('inactive', stopRecording);
-    }
-    streamRef.current = null;
-    // onstop handler will set recording to false and handle upload
   };
 
-  // Suppress hydration warning for initial client-side check
-  useEffect(() => {
-      setIsClient(true);
-  }, []);
 
-
-  // Render loading state during SSR or initial client check
+  // Render loading state or permission prompt if needed
   if (!isClient || isCheckingPermission) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
@@ -309,12 +430,14 @@ export default function Home() {
             <CardTitle className="text-xl text-center">Recording Settings</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 p-0">
-            <div className="text-center text-muted-foreground">Loading...</div>
+            <div className="text-center text-muted-foreground flex items-center justify-center">
+               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading...
+            </div>
           </CardContent>
           <CardFooter className="flex justify-center pt-6 p-0">
             <Button className="w-full" disabled>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Loading...
+              Checking Permissions...
             </Button>
           </CardFooter>
         </Card>
@@ -322,25 +445,39 @@ export default function Home() {
     );
   }
 
+
    const getButtonState = () => {
-     // Don't disable just for permission check, let startRecording handle it
      if (recording) return { disabled: false, text: 'Stop Recording' };
      if (isUploading) return { disabled: true, text: 'Uploading...' };
+     // Button is enabled even if permission *might* be needed.
+     // Let startRecording handle the prompt/error.
      return { disabled: false, text: 'Start Recording' };
    };
 
   const buttonState = getButtonState();
+
+   // Function to copy link to clipboard
+   const copyToClipboard = (text: string) => {
+       navigator.clipboard.writeText(text).then(() => {
+           sonnerToast.success("Link copied to clipboard!");
+       }, (err) => {
+           console.error('Failed to copy text: ', err);
+           sonnerToast.error("Failed to copy link.");
+       });
+   };
+
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-background text-foreground">
       <Toaster richColors position="top-center" />
       <h1 className="text-3xl font-bold mb-6 text-primary">Resolution Recorder</h1>
 
-      <Card className="w-full max-w-md p-6 shadow-lg rounded-lg border border-border">
+      <Card className="w-full max-w-md p-6 shadow-lg rounded-lg border border-border mb-8">
         <CardHeader className="p-0 pb-4">
           <CardTitle className="text-xl text-center">Recording Settings</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4 p-0">
+          {/* Resolution Select */}
           <div className="flex flex-col space-y-2">
             <Label htmlFor="resolution" className="text-sm font-medium">Resolution</Label>
             <Select
@@ -364,6 +501,7 @@ export default function Home() {
             </Select>
           </div>
 
+          {/* Frame Rate Select */}
           <div className="flex flex-col space-y-2">
             <Label htmlFor="frameRate" className="text-sm font-medium">Frame Rate</Label>
             <Select
@@ -391,7 +529,7 @@ export default function Home() {
             className={cn("w-full transition-colors duration-200 ease-in-out",
               recording ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : "bg-primary text-primary-foreground hover:bg-primary/90"
             )}
-            disabled={buttonState.disabled}
+            disabled={buttonState.disabled} // Use calculated button state
             aria-label={recording ? "Stop screen recording" : "Start screen recording"}
           >
             {isUploading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -400,58 +538,146 @@ export default function Home() {
         </CardFooter>
       </Card>
 
-      {/* Display GoFile link or local download based on availability */}
-      {gofileLink && (
-        <div className="mt-8 w-full max-w-2xl text-center">
-           <h2 className="text-xl font-semibold mb-3">Upload Complete</h2>
-           <p className="mb-2">Your video has been uploaded:</p>
-           <a
-             href={gofileLink}
-             target="_blank"
-             rel="noopener noreferrer"
-             className="block text-accent hover:underline font-medium break-all"
-           >
-             {gofileLink}
-           </a>
-           {/* Keep local download as a fallback */}
-           {videoURL && (
-             <a
-                href={videoURL}
-                download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
-                className="block mt-4 text-sm text-muted-foreground hover:underline"
-             >
-               Download Locally (Fallback)
-             </a>
-           )}
-        </div>
-      )}
+      {/* Display Preview, Upload Status, and Links */}
+      <div className="w-full max-w-2xl space-y-6">
+        {/* Display GoFile link */}
+        {gofileLink && !isUploading && (
+            <Card className="p-4 shadow-md border border-border">
+                <CardHeader className="p-0 pb-2">
+                   <CardTitle className="text-lg text-center">Upload Complete</CardTitle>
+                 </CardHeader>
+                 <CardContent className="p-0 space-y-2 text-center">
+                   <p className="text-sm">Your video is available at:</p>
+                   <div className="flex items-center justify-center space-x-2">
+                        <a
+                          href={gofileLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-accent hover:underline font-medium break-all text-sm"
+                          title={gofileLink}
+                        >
+                          {gofileLink.length > 50 ? `${gofileLink.substring(0, 50)}...` : gofileLink}
+                        </a>
+                       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(gofileLink)}>
+                           <Copy className="h-4 w-4" />
+                           <span className="sr-only">Copy link</span>
+                       </Button>
+                   </div>
+                </CardContent>
+                 {/* Keep local download as a fallback/alternative */}
+                 {videoURL && (
+                    <CardFooter className="p-0 pt-3 flex justify-center">
+                        <a
+                            href={videoURL}
+                            download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
+                            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                        >
+                            Download Locally
+                        </a>
+                    </CardFooter>
+                 )}
+            </Card>
+        )}
 
-      {/* Show local preview/download only if GoFile upload hasn't happened or failed */}
-      {!gofileLink && videoURL && (
-        <div className="mt-8 w-full max-w-2xl">
-          <h2 className="text-xl font-semibold mb-3 text-center">Recording Preview</h2>
-          <video
-            src={videoURL}
-            controls
-            className="rounded-md shadow-md w-full aspect-video border border-border"
-          />
-          <a
-            href={videoURL}
-            download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
-            className="block mt-4 text-center text-accent hover:underline font-medium"
-          >
-            Download Locally ({selectedResolution.label.split(' ')[0]}, {frameRate}fps)
-          </a>
-        </div>
-      )}
+        {/* Show local preview/download only if GoFile upload hasn't happened or failed, and not currently uploading */}
+        {!gofileLink && videoURL && !isUploading && (
+          <Card className="p-4 shadow-md border border-border">
+             <CardHeader className="p-0 pb-3">
+               <CardTitle className="text-lg text-center">Recording Ready</CardTitle>
+             </CardHeader>
+             <CardContent className="p-0 space-y-3">
+                <video
+                    src={videoURL}
+                    controls
+                    className="rounded-md shadow-sm w-full aspect-video border border-border"
+                    aria-label="Screen recording preview"
+                />
+            </CardContent>
+            <CardFooter className="p-0 pt-4 flex justify-center">
+                <a
+                    href={videoURL}
+                    download={`recording-${selectedResolution.label.split(' ')[0]}-${frameRate}fps.${mimeTypeToExtension(mimeType)}`}
+                    className={cn(buttonVariants({ variant: "default", size: "sm" }))}
+                >
+                    Download Locally ({selectedResolution.label.split(' ')[0]}, {frameRate}fps)
+                </a>
+            </CardFooter>
+          </Card>
+        )}
 
-      {/* Display upload error if any */}
-       {uploadError && (
-          <div className="mt-4 w-full max-w-md text-center p-3 bg-destructive/10 border border-destructive text-destructive rounded-md">
-             <p className="font-medium">Upload Failed</p>
-             <p className="text-sm">{uploadError}</p>
-          </div>
-       )}
+        {/* Display upload error if any */}
+         {uploadError && !isUploading && (
+            <Card className="p-3 bg-destructive/10 border border-destructive text-destructive rounded-md text-center">
+                <CardHeader className="p-0 pb-1"><CardTitle className="text-base">Upload Failed</CardTitle></CardHeader>
+                <CardContent className="p-0"><p className="text-sm">{uploadError}</p></CardContent>
+            </Card>
+         )}
+      </div>
+
+
+       {/* Recorded Links Table */}
+        {recordedLinks.length > 0 && (
+            <Card className="w-full max-w-4xl mt-12 p-4 shadow-lg rounded-lg border border-border">
+                <CardHeader className="p-0 pb-4">
+                    <CardTitle className="text-xl text-center">Recording History</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                    <Table>
+                        <TableCaption>Your recent GoFile recording links.</TableCaption>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead>Filename</TableHead>
+                                <TableHead>Recorded On</TableHead>
+                                <TableHead className="text-center">Link</TableHead>
+                                <TableHead className="text-right">Actions</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {recordedLinks.map((link) => (
+                                <TableRow key={link.url}>
+                                    <TableCell className="font-medium truncate max-w-xs" title={link.filename}>
+                                        {link.filename}
+                                    </TableCell>
+                                    <TableCell>{new Date(link.timestamp).toLocaleString()}</TableCell>
+                                    <TableCell className="text-center">
+                                        <a
+                                            href={link.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-accent hover:underline text-sm"
+                                        >
+                                            Open
+                                        </a>
+                                    </TableCell>
+                                    <TableCell className="text-right space-x-1">
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-7 w-7"
+                                            onClick={() => copyToClipboard(link.url)}
+                                            title="Copy link"
+                                        >
+                                            <Copy className="h-4 w-4" />
+                                            <span className="sr-only">Copy link</span>
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-7 w-7 text-destructive hover:text-destructive"
+                                            onClick={() => deleteLinkFromCookie(link.url)}
+                                             title="Delete link from history"
+                                        >
+                                            <Trash2 className="h-4 w-4" />
+                                            <span className="sr-only">Delete link</span>
+                                        </Button>
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </CardContent>
+            </Card>
+        )}
     </div>
   );
 }
@@ -461,5 +687,6 @@ function mimeTypeToExtension(mimeType?: string | null): string {
     if (!mimeType) return 'webm'; // Default
     if (mimeType.includes('mp4')) return 'mp4';
     if (mimeType.includes('webm')) return 'webm';
+    // Add more mappings if needed for other types (e.g., 'ogg', 'mov')
     return 'webm'; // Fallback
 }
