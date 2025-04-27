@@ -60,21 +60,25 @@ const isLowEndDevice = (): boolean => {
 };
 
 
-// GoFile Account Token (Consider moving to .env.local for security)
-const ACCOUNT_TOKEN = "L8i5S6dbkfKkwpOip6omaExfCuVKY27b";
+// GoFile Account Token - Now read from environment variable in gofile.ts
+// const ACCOUNT_TOKEN = process.env.NEXT_PUBLIC_GOFILE_ACCOUNT_TOKEN; // Client-side access (less secure)
+// Recommended: Use the token server-side in API routes/services if possible.
+// If client-side upload is necessary, ensure NEXT_PUBLIC_ prefix.
+// We'll keep the client-side upload logic for now, but acknowledge the token exposure risk.
+const ACCOUNT_TOKEN = process.env.NEXT_PUBLIC_GOFILE_ACCOUNT_TOKEN || "L8i5S6dbkfKkwpOip6omaExfCuVKY27b"; // Fallback for testing if env var not set
+
 const GOFILE_LINKS_COOKIE_NAME = 'gofileLinks';
 
 interface GoFileLinkData {
-    url: string;
+    url: string; // The GoFile download page URL (e.g., https://gofile.io/d/xxxxx)
     timestamp: number;
     filename: string;
-    // Optional: Add a field to store the direct media URL if you fetch it later
-    mediaUrl?: string; // Store the direct download link
+    mediaUrl?: string; // Store the direct download link (from API)
     mediaType?: 'image' | 'video' | 'audio' | 'unsupported' | 'unknown'; // Store the type
     mime?: string; // Store the mime type
 }
 
-// Define the structure for the media preview data
+// Define the structure for the media preview data (fetched from API)
 interface MediaPreviewData {
     downloadLink: string;
     mediaType: 'image' | 'video' | 'audio' | 'unsupported';
@@ -84,7 +88,7 @@ interface MediaPreviewData {
 export default function Home() {
   const [isClient, setIsClient] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [videoURL, setVideoURL] = useState<string | null>(null);
+  const [videoURL, setVideoURL] = useState<string | null>(null); // Local blob URL for preview after recording stops
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const recordedChunks = useRef<Blob[]>([]);
   const [hasDisplayMediaPermission, setHasDisplayMediaPermission] = useState<boolean | null>(null);
@@ -93,9 +97,9 @@ export default function Home() {
 
   // State for GoFile upload
   const [isUploading, setIsUploading] = useState(false);
-  const [gofileLink, setGofileLink] = useState<string | null>(null);
+  const [gofileLink, setGofileLink] = useState<string | null>(null); // Stores the GoFile PAGE URL after upload
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [recordedLinks, setRecordedLinks] = useState<GoFileLinkData[]>([]); // State for stored links
+  const [recordedLinks, setRecordedLinks] = useState<GoFileLinkData[]>([]); // State for stored links from cookie
 
   // State to hold initial settings determined after client mount
   const [initialResolution, setInitialResolution] = useState<typeof resolutions[0] | null>(null);
@@ -108,11 +112,10 @@ export default function Home() {
   const [isCheckingPermission, setIsCheckingPermission] = useState(true);
 
   // State for Preview Modal
-  const [previewMedia, setPreviewMedia] = useState<MediaPreviewData | null>(null); // Holds fetched media info
-  const [previewHtmlContent, setPreviewHtmlContent] = useState<string | null>(null); // State for HTML content (kept for debug tab)
+  const [previewMedia, setPreviewMedia] = useState<MediaPreviewData | null>(null); // Holds fetched media info from API
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
-  const [loadingPreviewUrl, setLoadingPreviewUrl] = useState<string | null>(null); // Track which link is loading
+  const [loadingPreviewUrl, setLoadingPreviewUrl] = useState<string | null>(null); // Track which GoFile page link is loading
   const [previewError, setPreviewError] = useState<string | null>(null); // Error specific to preview loading
 
 
@@ -128,6 +131,7 @@ export default function Home() {
                     return parsedLinks.map(link => ({
                        ...link,
                        mediaType: link.mediaType || 'unknown',
+                       mediaUrl: link.mediaUrl || undefined, // Keep mediaUrl if present
                        mime: link.mime || undefined, // Keep mime undefined if not present
                     }));
                }
@@ -162,6 +166,7 @@ export default function Home() {
             const linkToAdd: GoFileLinkData = {
                ...newLink,
                mediaType: newLink.mediaType || 'unknown',
+               mediaUrl: newLink.mediaUrl || undefined,
                mime: newLink.mime || undefined,
             };
             const updatedLinks = [linkToAdd, ...currentLinks].slice(0, 50); // Keep latest 50 links
@@ -450,15 +455,17 @@ export default function Home() {
 
         try {
             sonnerToast.info("Uploading to GoFile...", { id: 'gofile-upload', description:`Filename: ${filename}` });
-            const downloadPage = await uploadToGoFile(blob, filename, ACCOUNT_TOKEN);
+            const downloadPage = await uploadToGoFile(blob, filename, ACCOUNT_TOKEN); // Use token here
             // No need to check downloadPage truthiness here as uploadToGoFile throws on error
-            setGofileLink(downloadPage); // Set state for immediate UI update
+            setGofileLink(downloadPage); // Set state for immediate UI update (page URL)
             // Add the link to cookies (without media info initially)
             addLinkToCookie({
-                url: downloadPage,
+                url: downloadPage, // Store the GoFile page URL
                 timestamp: timestamp.getTime(),
                 filename,
                 mediaType: 'unknown', // Mark as unknown initially
+                mediaUrl: undefined, // Direct link will be fetched later
+                mime: undefined,
             });
             sonnerToast.success("Upload successful!", { description: "Video uploaded to GoFile.", id: 'gofile-upload', duration: 4000 });
         } catch (error: any) {
@@ -590,20 +597,19 @@ export default function Home() {
   };
 
   // --- Preview Modal ---
-    const openPreviewModal = async (gofileUrl: string, linkFilename: string) => {
+    const openPreviewModal = async (gofilePageUrl: string, linkFilename: string) => {
         if (isLoadingPreview) return; // Prevent multiple fetches
 
-        console.log("Attempting to open media preview for:", gofileUrl);
-        setLoadingPreviewUrl(gofileUrl); // Track which link is loading
+        console.log("Attempting to open media preview for GoFile page:", gofilePageUrl);
+        setLoadingPreviewUrl(gofilePageUrl); // Track which GoFile PAGE link is loading
         setIsLoadingPreview(true);
         setPreviewMedia(null); // Clear previous media
-        setPreviewHtmlContent(null); // Clear HTML debug content
         setPreviewError(null); // Clear previous errors
         setIsPreviewModalOpen(true); // Open modal immediately to show loader
 
         try {
             // Check if media info is already stored in cookies
-             const storedLink = recordedLinks.find(link => link.url === gofileUrl);
+             const storedLink = recordedLinks.find(link => link.url === gofilePageUrl);
              if (storedLink && storedLink.mediaType && storedLink.mediaType !== 'unknown' && storedLink.mediaUrl) {
                   console.log("Using stored media info from cookie:", storedLink);
                   setPreviewMedia({
@@ -617,11 +623,11 @@ export default function Home() {
              }
 
 
-            // Call the API route to get the media link and type
+            // Call the API route to get the direct media link and type using the GoFile PAGE URL
             const response = await fetch(`/api/gofile-media`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: gofileUrl }),
+                body: JSON.stringify({ url: gofilePageUrl }), // Send the GoFile PAGE url
             });
 
             const data = await response.json();
@@ -634,30 +640,22 @@ export default function Home() {
                 throw new Error("API response missing required media information.");
             }
 
-            setPreviewMedia(data as MediaPreviewData);
-            console.log("Preview media info obtained:", data);
+            const previewData: MediaPreviewData = {
+                downloadLink: data.downloadLink,
+                mediaType: data.mediaType,
+                mime: data.mime
+            };
 
-            // Update the link in cookies with the fetched info
+            setPreviewMedia(previewData);
+            console.log("Preview media info obtained:", previewData);
+
+            // Update the link in cookies with the fetched info (direct link, type, mime)
             updateLinkInCookie({
-                 url: gofileUrl,
-                 mediaUrl: data.downloadLink,
-                 mediaType: data.mediaType,
-                 mime: data.mime,
+                 url: gofilePageUrl, // Keep the original GoFile page URL as the key
+                 mediaUrl: previewData.downloadLink, // Store the direct link
+                 mediaType: previewData.mediaType,
+                 mime: previewData.mime,
             });
-
-            // Fetch HTML content for the debug tab (optional)
-            try {
-                const htmlResponse = await fetch(`/api/download?url=${encodeURIComponent(gofileUrl)}`); // Assuming /api/download returns HTML
-                 if (htmlResponse.ok) {
-                     const htmlData = await htmlResponse.json();
-                     setPreviewHtmlContent(htmlData.html || null);
-                 } else {
-                     console.warn("Could not fetch HTML content for debug tab.");
-                 }
-             } catch (htmlError) {
-                  console.warn("Error fetching HTML content for debug tab:", htmlError);
-             }
-
 
         } catch (error: any) {
             console.error("Error fetching preview media:", error);
@@ -822,11 +820,11 @@ export default function Home() {
 
       {/* Display Preview, Upload Status, and Links */}
       <div className="w-full max-w-2xl space-y-6">
-        {/* Video Preview - Always show if videoURL exists */}
+        {/* Video Preview - Always show if videoURL (local blob) exists */}
         {videoURL && (
           <Card className="p-4 shadow-md border border-border">
             <CardHeader className="p-0 pb-3">
-              <CardTitle className="text-lg text-center">Last Recording Preview</CardTitle>
+              <CardTitle className="text-lg text-center">Last Recording Preview (Local)</CardTitle>
             </CardHeader>
             <CardContent className="p-0 space-y-3">
               <video
@@ -852,7 +850,7 @@ export default function Home() {
               {gofileLink && !isUploading && (
                 <div className="flex items-center space-x-2">
                   <a
-                    href={gofileLink}
+                    href={gofileLink} // Link to the GoFile PAGE URL
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-accent hover:underline font-medium text-sm truncate max-w-[200px]" // Added truncate
@@ -928,7 +926,7 @@ export default function Home() {
                                     </TableCell>
                                     <TableCell className="text-center">
                                         <a
-                                            href={link.url}
+                                            href={link.url} // Link to the GoFile PAGE url
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className={cn(buttonVariants({ variant: "link", size: "sm" }), "px-1")}
@@ -941,7 +939,7 @@ export default function Home() {
                                             variant="ghost"
                                             size="icon"
                                             className="h-7 w-7"
-                                            onClick={() => copyToClipboard(link.url)}
+                                            onClick={() => copyToClipboard(link.url)} // Copy the GoFile PAGE url
                                             title="Copy link"
                                         >
                                             <Copy className="h-4 w-4" />
@@ -971,7 +969,7 @@ export default function Home() {
           <DialogContent className="sm:max-w-[80vw] max-h-[90vh] flex flex-col p-0"> {/* Removed default padding */}
             <DialogHeader className="p-4 border-b border-border">
               <DialogTitle>Media Preview</DialogTitle>
-              <DialogDescription>Preview the media content or view raw HTML.</DialogDescription>
+              <DialogDescription>Preview the media content fetched from GoFile API.</DialogDescription>
             </DialogHeader>
 
             {isLoadingPreview && (
@@ -989,19 +987,13 @@ export default function Home() {
                  </div>
             )}
 
+            {/* Media Content Area - No longer needs Tabs */}
             {!isLoadingPreview && !previewError && previewMedia && (
-                 <Tabs defaultValue="media" className="w-full flex-grow flex flex-col overflow-hidden">
-                   <TabsList className="m-2 self-center">
-                     <TabsTrigger value="media">Media</TabsTrigger>
-                     <TabsTrigger value="html">HTML Source</TabsTrigger>
-                   </TabsList>
-
-                   {/* Media Tab */}
-                   <TabsContent value="media" className="flex-grow flex items-center justify-center overflow-auto p-2 mt-0">
+                 <div className="flex-grow flex items-center justify-center overflow-auto p-2 mt-0">
                      <div className="max-w-full max-h-full">
                          {previewMedia.mediaType === 'video' && (
                              <video
-                                src={previewMedia.downloadLink}
+                                src={previewMedia.downloadLink} // Use the direct link from API
                                 controls
                                 className="max-w-full max-h-[calc(90vh-150px)] rounded-md border border-input"
                                 key={previewMedia.downloadLink} // Force reload on link change
@@ -1009,14 +1001,14 @@ export default function Home() {
                          )}
                          {previewMedia.mediaType === 'image' && (
                              <img
-                                src={previewMedia.downloadLink}
+                                src={previewMedia.downloadLink} // Use the direct link from API
                                 alt="Media Preview"
                                 className="max-w-full max-h-[calc(90vh-150px)] rounded-md border border-input"
                              />
                          )}
                          {previewMedia.mediaType === 'audio' && (
                              <audio
-                                src={previewMedia.downloadLink}
+                                src={previewMedia.downloadLink} // Use the direct link from API
                                 controls
                                 className="w-full max-w-lg"
                              />
@@ -1025,27 +1017,15 @@ export default function Home() {
                              <div className="text-center text-muted-foreground p-4">
                                  <p>Unsupported media type: {previewMedia.mime}</p>
                                  <p>Cannot display preview.</p>
+                                 <a href={previewMedia.downloadLink} target="_blank" rel="noopener noreferrer" className={cn(buttonVariants({ variant: "link" }), "mt-2")}>
+                                     Download File
+                                 </a>
                              </div>
                           )}
                       </div>
-                   </TabsContent>
-
-                   {/* HTML Source Tab */}
-                   <TabsContent value="html" className="flex-grow overflow-hidden p-2 mt-0">
-                     {previewHtmlContent ? (
-                       <ScrollArea className="h-full w-full border border-input rounded-md bg-muted/30">
-                         <pre className="text-xs whitespace-pre-wrap break-all p-4">
-                           <code>{previewHtmlContent}</code>
-                         </pre>
-                       </ScrollArea>
-                     ) : (
-                       <div className="flex items-center justify-center h-full text-muted-foreground">
-                          {isLoadingPreview ? <Loader2 className="h-6 w-6 animate-spin"/> : <p>HTML content not available.</p>}
-                       </div>
-                     )}
-                   </TabsContent>
-                 </Tabs>
+                 </div>
             )}
+
 
             <DialogFooter className="p-4 border-t border-border sm:justify-end">
               <DialogClose asChild>

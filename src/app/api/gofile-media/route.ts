@@ -2,139 +2,161 @@
 // src/app/api/gofile-media/route.ts
 import { NextResponse } from 'next/server';
 import axios from 'axios';
-import * as cheerio from 'cheerio';
-// Use dynamic import for ESM-only 'file-type'
-// import { FileTypeResult, fromBuffer } from 'file-type';
 
-export async function POST(request: Request) {
-  let fromBuffer: any; // Declare variable for dynamic import
-  let requestBody: { url?: string } = {}; // To store the parsed request body
+// Define expected response structure from GoFile API (subset)
+interface GoFileContentResponse {
+  status: string;
+  data?: {
+    contents?: {
+      [fileId: string]: {
+        link: string;
+        mimetype?: string; // Use optional chaining as field name might vary
+        mimeType?: string; // Handle potential variations
+        name: string;
+      };
+    };
+    // Other potential fields like folderName, isOwner, etc.
+  };
+}
 
+interface ErrorResponse {
+  error: string;
+}
+
+interface SuccessResponse {
+    downloadLink: string;
+    mediaType: 'image' | 'video' | 'audio' | 'unsupported';
+    mime: string;
+}
+
+
+export async function POST(request: Request): Promise<NextResponse<SuccessResponse | ErrorResponse>> {
   try {
-    // Dynamically import 'file-type'
-    const fileTypeModule = await import('file-type');
-    fromBuffer = fileTypeModule.fromBuffer;
+    const { url } = await request.json();
 
-    // Try parsing request body early to use in error handling
-    try {
-        requestBody = await request.json();
-    } catch (parseError) {
-        console.error('[API /gofile-media] Error parsing request JSON:', parseError);
-        return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+    if (!url || typeof url !== 'string') {
+         return NextResponse.json({ error: 'Invalid URL provided' }, { status: 400 });
     }
 
-    const { url } = requestBody;
+    // Extract contentId from URL (e.g., https://gofile.io/d/contentId)
+    const urlParts = url.split('/');
+    const contentId = urlParts[urlParts.length - 1];
 
-    if (!url || !url.includes('gofile.io/d/')) {
-      return NextResponse.json({ error: 'Invalid Gofile URL' }, { status: 400 });
+    if (!contentId) {
+      console.error(`[API /gofile-media] Could not extract contentId from URL: ${url}`);
+      return NextResponse.json({ error: 'Invalid Gofile URL format' }, { status: 400 });
     }
-    console.log(`[API /gofile-media] Processing URL: ${url}`);
 
-    // Fetch the download page HTML
-    const response = await axios.get(url, {
+    console.log(`[API /gofile-media] Processing contentId: ${contentId} for URL: ${url}`);
+
+    // Access the token securely from environment variables
+    const accountToken = process.env.GOFILE_ACCOUNT_TOKEN;
+    if (!accountToken) {
+        console.error("[API /gofile-media] GoFile Account Token not configured in environment variables.");
+        // Avoid exposing token details in the error message
+        return NextResponse.json({ error: 'Server configuration error.' }, { status: 500 });
+    }
+
+    // Construct the GoFile API URL
+    const apiUrl = `https://api.gofile.io/getContent?contentId=${contentId}&token=${accountToken}`;
+
+    // Call the GoFile API
+    const response = await axios.get<GoFileContentResponse>(apiUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
+        'Accept': 'application/json', // Request JSON response
       },
-      timeout: 15000,
+      timeout: 15000, // Set a reasonable timeout
     });
-    const html = response.data;
 
-    // Parse HTML with Cheerio
-    const $ = cheerio.load(html);
-    // Updated selector based on provided HTML structure
-    const downloadLink = $('div.item-mediaplayer video source').attr('src');
-
-    if (!downloadLink) {
-        console.error(`[API /gofile-media] Download link selector ('div.item-mediaplayer video source') failed for page: ${url}`);
-        const mainContentName = $('#filemanager_maincontent_name').text();
-         if (!mainContentName) {
-             console.warn("[API /gofile-media] Could not find main content name (#filemanager_maincontent_name) either.");
-             return NextResponse.json({ error: 'Content structure unrecognizable or file unavailable.' }, { status: 404 });
-         }
-         console.warn(`[API /gofile-media] Found main content name '${mainContentName}', but no video source link found.`);
-         return NextResponse.json({ error: 'Download link not found within the media player.' }, { status: 404 });
-    }
-
-    console.log(`[API /gofile-media] Extracted download link: ${downloadLink}`);
-
-    // Fetch the first few bytes of the media to determine its type
-    const mediaResponse = await axios.get(downloadLink, {
-        responseType: 'arraybuffer',
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Range': 'bytes=0-4100' // Fetch first ~4KB for type detection (standard for file-type)
-        },
-        timeout: 20000,
-        validateStatus: (status) => status >= 200 && status < 300 || status === 206, // Allow Partial Content
-    });
-    const buffer = Buffer.from(mediaResponse.data);
-    const fileType = await fromBuffer(buffer);
-
-    if (!fileType) {
-      console.warn(`[API /gofile-media] Unable to determine media type for link: ${downloadLink}`);
-      // Fallback: Try to infer from extension or assume video if not determinable
-      const extension = downloadLink.split('.').pop()?.toLowerCase();
-      let inferredMediaType = 'video'; // Default assumption
-      let inferredMime = 'application/octet-stream';
-      if (extension === 'webm' || extension === 'mp4' || extension === 'mov') {
-        inferredMediaType = 'video';
-        inferredMime = extension === 'mp4' ? 'video/mp4' : 'video/webm';
-      } else if (extension === 'mp3' || extension === 'wav' || extension === 'ogg') {
-        inferredMediaType = 'audio';
-        inferredMime = extension === 'mp3' ? 'audio/mpeg' : 'audio/ogg';
-      } else if (extension === 'jpg' || extension === 'jpeg' || extension === 'png' || extension === 'gif') {
-        inferredMediaType = 'image';
-        inferredMime = extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : 'image/png';
+    // Check GoFile API status
+    if (response.data.status !== 'ok') {
+      console.error(`[API /gofile-media] GoFile API returned non-ok status for contentId ${contentId}:`, response.data);
+      const errorMessage = `GoFile API error: ${response.data.status}`; // Avoid exposing too much detail
+      // Map common GoFile errors to user-friendly messages
+      if (response.data.status === 'error-notFound') {
+        return NextResponse.json({ error: 'Content not found or invalid.' }, { status: 404 });
       }
-      console.log(`[API /gofile-media] Inferred type: ${inferredMediaType}, Mime: ${inferredMime}`);
-      return NextResponse.json({ downloadLink, mediaType: inferredMediaType, mime: inferredMime });
-      // return NextResponse.json({ error: 'Unable to determine media type from buffer' }, { status: 400 });
+      if (response.data.status === 'error-passwordRequired') {
+        return NextResponse.json({ error: 'Content is password protected.' }, { status: 403 });
+      }
+       if (response.data.status === 'error-permissionDenied') {
+         return NextResponse.json({ error: 'Permission denied to access this content.' }, { status: 403 });
+       }
+      return NextResponse.json({ error: errorMessage }, { status: 502 }); // Bad Gateway or similar
     }
 
-    const mediaType = fileType.mime.startsWith('image/')
-      ? 'image'
-      : fileType.mime.startsWith('video/')
-      ? 'video'
-      : fileType.mime.startsWith('audio/')
-      ? 'audio'
-      : 'unsupported';
-
-    if (mediaType === 'unsupported') {
-        console.warn(`[API /gofile-media] Unsupported media type detected: ${fileType.mime}`);
-      return NextResponse.json({ error: `Unsupported media type: ${fileType.mime}` }, { status: 400 });
+    // Extract file details
+    const contents = response.data.data?.contents;
+    if (!contents || Object.keys(contents).length === 0) {
+      console.error(`[API /gofile-media] No contents found in GoFile API response for contentId ${contentId}:`, response.data);
+      return NextResponse.json({ error: 'No files found in this Gofile link.' }, { status: 404 });
     }
 
-    console.log(`[API /gofile-media] Detected type: ${mediaType}, Mime: ${fileType.mime}`);
-    return NextResponse.json({ downloadLink, mediaType, mime: fileType.mime });
+    // Assuming the first file in the contents object is the one we want
+    // (Gofile links can sometimes contain multiple files in a folder)
+    const fileId = Object.keys(contents)[0];
+    const fileData = contents[fileId];
+
+    if (!fileData || !fileData.link) {
+        console.error(`[API /gofile-media] Missing file data or link in GoFile API response for fileId ${fileId}:`, fileData);
+        return NextResponse.json({ error: 'Could not retrieve file details from Gofile.' }, { status: 500 });
+    }
+
+    const downloadLink = fileData.link;
+    const mime = fileData.mimetype || fileData.mimeType || 'application/octet-stream'; // Get mime type, provide fallback
+
+    console.log(`[API /gofile-media] Extracted details - Link: ${downloadLink}, Mime: ${mime}`);
+
+    // Determine media type based on mime type
+    let mediaType: 'image' | 'video' | 'audio' | 'unsupported';
+    if (mime.startsWith('image/')) {
+      mediaType = 'image';
+    } else if (mime.startsWith('video/')) {
+      mediaType = 'video';
+    } else if (mime.startsWith('audio/')) {
+      mediaType = 'audio';
+    } else {
+      mediaType = 'unsupported';
+      console.warn(`[API /gofile-media] Unsupported media type detected: ${mime}`);
+      // We can still return the link, but mark it as unsupported for the preview
+      // return NextResponse.json({ error: `Unsupported media type: ${mime}` }, { status: 400 });
+    }
+
+    return NextResponse.json({ downloadLink, mediaType, mime });
 
   } catch (error: any) {
-    // Use the url from the request body captured earlier, or fallback to axios config url, or 'Unknown URL'
-    // Removed invalid 'rescue null' syntax here
-    const originalUrl = requestBody?.url || error.config?.url || 'Unknown URL';
-    console.error('[API /gofile-media] Error fetching media:', {
-        message: error.message,
-        url: originalUrl, // Use the captured/fallback URL
-        status: error.response?.status,
-        code: error.code,
+    console.error('[API /gofile-media] Error processing request:', {
+      message: error.message,
+      url: (await request.json().catch(() => ({}))).url || 'unknown', // Safely get URL from request body
+      status: error.response?.status,
+      code: error.code,
+      response_data: error.response?.data, // Log response data if available
     });
 
-     let status = 500;
-     let message = 'Failed to fetch or process GoFile media';
+    let status = 500;
+    let message = 'Failed to process Gofile link';
 
-     if (axios.isAxiosError(error)) {
-        if (error.response) {
-            status = error.response.status;
-            message = `Server responded with status ${status}`;
-            if (status === 404) message = 'GoFile page or media not found (404).';
-        } else if (error.request) {
-             message = 'No response received from GoFile server.';
-             status = 504; // Gateway Timeout
+    if (axios.isAxiosError(error)) {
+      if (error.response) {
+        status = error.response.status;
+        message = `Gofile API request failed: Server responded with status ${status}`;
+        if (status === 404) message = 'Gofile content not found (404).';
+        else if (status === 401 || status === 403) message = 'Access denied by Gofile API (check token?).';
+      } else if (error.request) {
+        message = 'No response received from Gofile API server.';
+        status = 504; // Gateway Timeout
+      } else {
+        message = `Error setting up request to Gofile API: ${error.message}`;
+      }
+    } else if (error instanceof Error) {
+        // Handle JSON parsing errors from request body
+        if (error instanceof SyntaxError && error.message.includes('JSON')) {
+           message = "Invalid request format.";
+           status = 400;
         } else {
-            message = `Error setting up request: ${error.message}`;
+           message = error.message;
         }
-     } else if (error instanceof Error) {
-         message = error.message; // Use the specific error message
-     }
+    }
 
     return NextResponse.json({ error: message }, { status });
   }
