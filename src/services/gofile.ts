@@ -71,7 +71,7 @@ async function getBestServer(): Promise<string> {
  * @param {Blob} fileBlob The file content as a Blob.
  * @param {string} filename The desired filename for the uploaded file.
  * @param {string} accountToken Your GoFile account token (optional but recommended).
- * @returns {Promise<string|null>} The URL to the download page, or null on failure.
+ * @returns {Promise<string>} The URL to the download page.
  * @throws {Error} If the upload fails at any stage.
  */
 export async function uploadToGoFile(fileBlob: Blob, filename: string, accountToken?: string): Promise<string> {

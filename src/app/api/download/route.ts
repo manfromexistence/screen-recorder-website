@@ -23,7 +23,7 @@ export async function GET(request: Request): Promise<NextResponse<HtmlResponse |
     return NextResponse.json({ error: 'Download page URL is required' }, { status: 400 });
   }
 
-  console.log(`[Debug API] Fetching GoFile page HTML for debugging: ${downloadPageUrl}`);
+  console.log(`[Debug API /download] Fetching GoFile page HTML for debugging: ${downloadPageUrl}`);
 
   try {
     // Fetch the download page HTML
@@ -39,7 +39,7 @@ export async function GET(request: Request): Promise<NextResponse<HtmlResponse |
     });
 
      // Return the raw HTML content for debugging
-     console.log(`[Debug API] Successfully fetched HTML for ${downloadPageUrl}. Returning content.`);
+     console.log(`[Debug API /download] Successfully fetched HTML for ${downloadPageUrl}. Returning content.`);
      return NextResponse.json({ html: response.data }, {
         status: 200,
         headers: {
@@ -95,7 +95,7 @@ export async function GET(request: Request): Promise<NextResponse<HtmlResponse |
     // --- End Original Code --- */
 
   } catch (error: any) {
-     console.error('[Debug API] Error fetching GoFile page HTML:', {
+     console.error('[Debug API /download] Error fetching GoFile page HTML:', {
        url: downloadPageUrl,
        message: error.message,
        code: error.code,

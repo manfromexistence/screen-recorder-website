@@ -8,11 +8,12 @@ import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog"; // Import Dialog components
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Import Tabs components
 import { ScrollArea } from "@/components/ui/scroll-area"; // Import ScrollArea
 import { toast as sonnerToast } from 'sonner'; // Import Sonner Toaster directly
 import { cn } from "@/lib/utils";
 import { uploadToGoFile } from "@/services/gofile"; // Import the GoFile service
-import { Loader2, Copy, Trash2, Video, PlayCircle } from "lucide-react"; // Import Loader, Copy, Trash, Video, and PlayCircle icons
+import { Loader2, Copy, Trash2, Video, PlayCircle, Image as ImageIcon, Music } from "lucide-react"; // Import Loader, Copy, Trash, Video, PlayCircle, Image, Music icons
 import { getCookie, setCookie, deleteCookie } from 'cookies-next'; // Use cookies-next for easier cookie management
 
 // Define available resolutions
@@ -68,7 +69,16 @@ interface GoFileLinkData {
     timestamp: number;
     filename: string;
     // Optional: Add a field to store the direct media URL if you fetch it later
-    // mediaUrl?: string;
+    mediaUrl?: string; // Store the direct download link
+    mediaType?: 'image' | 'video' | 'audio' | 'unsupported' | 'unknown'; // Store the type
+    mime?: string; // Store the mime type
+}
+
+// Define the structure for the media preview data
+interface MediaPreviewData {
+    downloadLink: string;
+    mediaType: 'image' | 'video' | 'audio' | 'unsupported';
+    mime: string;
 }
 
 export default function Home() {
@@ -98,11 +108,12 @@ export default function Home() {
   const [isCheckingPermission, setIsCheckingPermission] = useState(true);
 
   // State for Preview Modal
-  const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null); // Keep for potential future use
-  const [previewHtmlContent, setPreviewHtmlContent] = useState<string | null>(null); // State for HTML content
+  const [previewMedia, setPreviewMedia] = useState<MediaPreviewData | null>(null); // Holds fetched media info
+  const [previewHtmlContent, setPreviewHtmlContent] = useState<string | null>(null); // State for HTML content (kept for debug tab)
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [loadingPreviewUrl, setLoadingPreviewUrl] = useState<string | null>(null); // Track which link is loading
+  const [previewError, setPreviewError] = useState<string | null>(null); // Error specific to preview loading
 
 
   // --- Cookie Helper Functions ---
@@ -113,7 +124,12 @@ export default function Home() {
                const parsedLinks = JSON.parse(cookieValue);
                // Basic validation
                if (Array.isArray(parsedLinks) && parsedLinks.every(link => typeof link === 'object' && link.url && link.timestamp && link.filename)) {
-                   return parsedLinks;
+                    // Ensure mediaType and mime are present or set to 'unknown'
+                    return parsedLinks.map(link => ({
+                       ...link,
+                       mediaType: link.mediaType || 'unknown',
+                       mime: link.mime || undefined, // Keep mime undefined if not present
+                    }));
                }
            } catch (error) {
                console.error("Error parsing gofileLinks cookie:", error);
@@ -142,7 +158,13 @@ export default function Home() {
        const currentLinks = loadLinksFromCookie();
        // Prevent duplicates (optional, based on URL)
        if (!currentLinks.some(link => link.url === newLink.url)) {
-            const updatedLinks = [newLink, ...currentLinks].slice(0, 50); // Keep latest 50 links to manage cookie size
+            // Ensure default values for new properties if needed
+            const linkToAdd: GoFileLinkData = {
+               ...newLink,
+               mediaType: newLink.mediaType || 'unknown',
+               mime: newLink.mime || undefined,
+            };
+            const updatedLinks = [linkToAdd, ...currentLinks].slice(0, 50); // Keep latest 50 links
             setRecordedLinks(updatedLinks); // Update state immediately
             saveLinksToCookie(updatedLinks);
        }
@@ -155,6 +177,16 @@ export default function Home() {
         saveLinksToCookie(updatedLinks); // Update cookie
         sonnerToast.info("Recording deleted from history.");
     };
+
+   // Function to update a specific link in the cookie (e.g., after fetching media info)
+   const updateLinkInCookie = (updatedLinkData: Partial<GoFileLinkData> & { url: string }) => {
+        const currentLinks = loadLinksFromCookie();
+        const updatedLinks = currentLinks.map(link =>
+            link.url === updatedLinkData.url ? { ...link, ...updatedLinkData } : link
+        );
+        setRecordedLinks(updatedLinks); // Update state
+        saveLinksToCookie(updatedLinks); // Update cookie
+   };
 
 
   // --- Effects ---
@@ -269,8 +301,9 @@ export default function Home() {
           if (videoURL) {
               URL.revokeObjectURL(videoURL);
           }
-          if (previewVideoUrl) {
-              URL.revokeObjectURL(previewVideoUrl); // Clean up preview URL too
+          // Cleanup preview media URL if it's an object URL (it's likely a direct link now, but good practice)
+          if (previewMedia?.downloadLink && previewMedia.downloadLink.startsWith('blob:')) {
+             URL.revokeObjectURL(previewMedia.downloadLink);
           }
       };
   }, []); // Empty dependency array ensures this runs only once on mount
@@ -420,8 +453,13 @@ export default function Home() {
             const downloadPage = await uploadToGoFile(blob, filename, ACCOUNT_TOKEN);
             // No need to check downloadPage truthiness here as uploadToGoFile throws on error
             setGofileLink(downloadPage); // Set state for immediate UI update
-            // Add the link to cookies
-            addLinkToCookie({ url: downloadPage, timestamp: timestamp.getTime(), filename });
+            // Add the link to cookies (without media info initially)
+            addLinkToCookie({
+                url: downloadPage,
+                timestamp: timestamp.getTime(),
+                filename,
+                mediaType: 'unknown', // Mark as unknown initially
+            });
             sonnerToast.success("Upload successful!", { description: "Video uploaded to GoFile.", id: 'gofile-upload', duration: 4000 });
         } catch (error: any) {
             console.error("GoFile upload failed:", error);
@@ -555,46 +593,78 @@ export default function Home() {
     const openPreviewModal = async (gofileUrl: string, linkFilename: string) => {
         if (isLoadingPreview) return; // Prevent multiple fetches
 
-        console.log("Attempting to open HTML preview for:", gofileUrl);
+        console.log("Attempting to open media preview for:", gofileUrl);
         setLoadingPreviewUrl(gofileUrl); // Track which link is loading
         setIsLoadingPreview(true);
-        setPreviewVideoUrl(null); // Clear video preview (if any)
-        setPreviewHtmlContent(null); // Clear previous HTML
+        setPreviewMedia(null); // Clear previous media
+        setPreviewHtmlContent(null); // Clear HTML debug content
+        setPreviewError(null); // Clear previous errors
         setIsPreviewModalOpen(true); // Open modal immediately to show loader
 
         try {
-            // Call the API route to get the HTML content
-            const response = await fetch(`/api/download?url=${encodeURIComponent(gofileUrl)}`);
+            // Check if media info is already stored in cookies
+             const storedLink = recordedLinks.find(link => link.url === gofileUrl);
+             if (storedLink && storedLink.mediaType && storedLink.mediaType !== 'unknown' && storedLink.mediaUrl) {
+                  console.log("Using stored media info from cookie:", storedLink);
+                  setPreviewMedia({
+                    downloadLink: storedLink.mediaUrl,
+                    mediaType: storedLink.mediaType,
+                    mime: storedLink.mime || '',
+                  });
+                  setIsLoadingPreview(false);
+                  setLoadingPreviewUrl(null);
+                  return; // Exit early if we have the info
+             }
+
+
+            // Call the API route to get the media link and type
+            const response = await fetch(`/api/gofile-media`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: gofileUrl }),
+            });
+
+            const data = await response.json();
 
             if (!response.ok) {
-                let errorMessage = `Failed to fetch HTML data (status ${response.status})`;
-                 try {
-                    const errorData = await response.json();
-                    errorMessage = errorData.error || errorMessage;
-                 } catch (e) {
-                    try {
-                        const errorText = await response.text();
-                        errorMessage = errorText || errorMessage;
-                        console.warn("Non-JSON error response from API:", errorText);
-                    } catch (textErr) {
-                        console.error("Could not read error response body:", textErr);
-                    }
-                 }
-                throw new Error(errorMessage);
+                throw new Error(data.error || `Failed to fetch media info (status ${response.status})`);
             }
 
-            // Get the HTML content from the JSON response
-            const data = await response.json();
-            if (!data.html) {
-                throw new Error("API response did not contain HTML content.");
+            if (!data.downloadLink || !data.mediaType) {
+                throw new Error("API response missing required media information.");
             }
-            setPreviewHtmlContent(data.html);
-            console.log("Preview HTML content obtained.");
+
+            setPreviewMedia(data as MediaPreviewData);
+            console.log("Preview media info obtained:", data);
+
+            // Update the link in cookies with the fetched info
+            updateLinkInCookie({
+                 url: gofileUrl,
+                 mediaUrl: data.downloadLink,
+                 mediaType: data.mediaType,
+                 mime: data.mime,
+            });
+
+            // Fetch HTML content for the debug tab (optional)
+            try {
+                const htmlResponse = await fetch(`/api/download?url=${encodeURIComponent(gofileUrl)}`); // Assuming /api/download returns HTML
+                 if (htmlResponse.ok) {
+                     const htmlData = await htmlResponse.json();
+                     setPreviewHtmlContent(htmlData.html || null);
+                 } else {
+                     console.warn("Could not fetch HTML content for debug tab.");
+                 }
+             } catch (htmlError) {
+                  console.warn("Error fetching HTML content for debug tab:", htmlError);
+             }
+
 
         } catch (error: any) {
-            console.error("Error fetching preview HTML:", error);
-            sonnerToast.error("Preview Failed", { description: error.message || "Could not load HTML preview." });
-            setIsPreviewModalOpen(false); // Close modal on error
+            console.error("Error fetching preview media:", error);
+            const errorMessage = error.message || "Could not load media preview.";
+            setPreviewError(errorMessage); // Set specific error for the modal
+            sonnerToast.error("Preview Failed", { description: errorMessage });
+            // Don't close modal on error, show error message inside
         } finally {
             setIsLoadingPreview(false);
             setLoadingPreviewUrl(null); // Clear loading tracker
@@ -847,8 +917,11 @@ export default function Home() {
                                             {isLoadingPreview && loadingPreviewUrl === link.url ? (
                                                 <Loader2 className="h-4 w-4 animate-spin" />
                                             ) : (
-                                                // Using PlayCircle for HTML preview for now
-                                                <PlayCircle className="h-5 w-5 text-muted-foreground hover:text-accent" />
+                                                // Use appropriate icon based on stored media type
+                                                link.mediaType === 'video' ? <Video className="h-5 w-5 text-muted-foreground hover:text-accent" /> :
+                                                link.mediaType === 'image' ? <ImageIcon className="h-5 w-5 text-muted-foreground hover:text-accent" /> :
+                                                link.mediaType === 'audio' ? <Music className="h-5 w-5 text-muted-foreground hover:text-accent" /> :
+                                                <PlayCircle className="h-5 w-5 text-muted-foreground hover:text-accent" /> // Default/unknown
                                             )}
                                             <span className="sr-only">Preview Media</span>
                                         </Button>
@@ -893,35 +966,88 @@ export default function Home() {
             </Card>
         )}
 
-        {/* Preview Modal */}
+         {/* Preview Modal using Tabs */}
         <Dialog open={isPreviewModalOpen} onOpenChange={setIsPreviewModalOpen}>
-          <DialogContent className="sm:max-w-[80vw] max-h-[90vh] flex flex-col"> {/* Increased width */}
-            <DialogHeader>
-              <DialogTitle>HTML Preview</DialogTitle>
-              <DialogDescription>Raw HTML content fetched from GoFile page for debugging.</DialogDescription>
+          <DialogContent className="sm:max-w-[80vw] max-h-[90vh] flex flex-col p-0"> {/* Removed default padding */}
+            <DialogHeader className="p-4 border-b border-border">
+              <DialogTitle>Media Preview</DialogTitle>
+              <DialogDescription>Preview the media content or view raw HTML.</DialogDescription>
             </DialogHeader>
-            <div className="flex-grow flex items-center justify-center overflow-hidden p-2 border border-border rounded-md bg-muted/30">
-              {isLoadingPreview && (
-                <div className="flex flex-col items-center justify-center h-full">
-                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  <p className="mt-2 text-muted-foreground">Loading HTML preview...</p>
-                </div>
-              )}
-              {!isLoadingPreview && previewHtmlContent && (
-                 <ScrollArea className="h-[calc(90vh-180px)] w-full"> {/* Scroll area for potentially long HTML */}
-                   <pre className="text-xs whitespace-pre-wrap break-all p-4 bg-background rounded-md border border-input">
-                     <code>{previewHtmlContent}</code>
-                   </pre>
-                 </ScrollArea>
-              )}
-               {!isLoadingPreview && !previewHtmlContent && (
-                 <div className="flex flex-col items-center justify-center h-full text-destructive">
-                   <Video className="h-8 w-8 mb-2" /> {/* Keep Video icon for now */}
-                   <p>Failed to load HTML preview.</p>
+
+            {isLoadingPreview && (
+                 <div className="flex flex-col items-center justify-center h-[50vh]">
+                   <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                   <p className="mt-2 text-muted-foreground">Loading media preview...</p>
                  </div>
-               )}
-            </div>
-            <DialogFooter className="sm:justify-end">
+            )}
+
+            {!isLoadingPreview && previewError && (
+                 <div className="flex flex-col items-center justify-center h-[50vh] text-destructive p-4 text-center">
+                    <Video className="h-10 w-10 mb-3" /> {/* Use generic icon for error */}
+                    <p className="font-semibold">Failed to load preview</p>
+                    <p className="text-sm">{previewError}</p>
+                 </div>
+            )}
+
+            {!isLoadingPreview && !previewError && previewMedia && (
+                 <Tabs defaultValue="media" className="w-full flex-grow flex flex-col overflow-hidden">
+                   <TabsList className="m-2 self-center">
+                     <TabsTrigger value="media">Media</TabsTrigger>
+                     <TabsTrigger value="html">HTML Source</TabsTrigger>
+                   </TabsList>
+
+                   {/* Media Tab */}
+                   <TabsContent value="media" className="flex-grow flex items-center justify-center overflow-auto p-2 mt-0">
+                     <div className="max-w-full max-h-full">
+                         {previewMedia.mediaType === 'video' && (
+                             <video
+                                src={previewMedia.downloadLink}
+                                controls
+                                className="max-w-full max-h-[calc(90vh-150px)] rounded-md border border-input"
+                                key={previewMedia.downloadLink} // Force reload on link change
+                             />
+                         )}
+                         {previewMedia.mediaType === 'image' && (
+                             <img
+                                src={previewMedia.downloadLink}
+                                alt="Media Preview"
+                                className="max-w-full max-h-[calc(90vh-150px)] rounded-md border border-input"
+                             />
+                         )}
+                         {previewMedia.mediaType === 'audio' && (
+                             <audio
+                                src={previewMedia.downloadLink}
+                                controls
+                                className="w-full max-w-lg"
+                             />
+                         )}
+                          {previewMedia.mediaType === 'unsupported' && (
+                             <div className="text-center text-muted-foreground p-4">
+                                 <p>Unsupported media type: {previewMedia.mime}</p>
+                                 <p>Cannot display preview.</p>
+                             </div>
+                          )}
+                      </div>
+                   </TabsContent>
+
+                   {/* HTML Source Tab */}
+                   <TabsContent value="html" className="flex-grow overflow-hidden p-2 mt-0">
+                     {previewHtmlContent ? (
+                       <ScrollArea className="h-full w-full border border-input rounded-md bg-muted/30">
+                         <pre className="text-xs whitespace-pre-wrap break-all p-4">
+                           <code>{previewHtmlContent}</code>
+                         </pre>
+                       </ScrollArea>
+                     ) : (
+                       <div className="flex items-center justify-center h-full text-muted-foreground">
+                          {isLoadingPreview ? <Loader2 className="h-6 w-6 animate-spin"/> : <p>HTML content not available.</p>}
+                       </div>
+                     )}
+                   </TabsContent>
+                 </Tabs>
+            )}
+
+            <DialogFooter className="p-4 border-t border-border sm:justify-end">
               <DialogClose asChild>
                 <Button type="button" variant="secondary">
                   Close
@@ -930,6 +1056,7 @@ export default function Home() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
 
     </div>
   );
@@ -940,6 +1067,8 @@ function mimeTypeToExtension(mimeType?: string | null): string {
     if (!mimeType) return 'webm'; // Default
     if (mimeType.includes('mp4')) return 'mp4';
     if (mimeType.includes('webm')) return 'webm';
-    // Add more mappings if needed for other types (e.g., 'ogg', 'mov')
-    return 'webm'; // Fallback
+    if (mimeType.includes('opus')) return 'opus';
+    if (mimeType.includes('ogg')) return 'ogg';
+    // Add more mappings if needed for other types (e.g., 'mov')
+    return 'bin'; // Fallback for unknown types
 }
