@@ -76,7 +76,12 @@ interface GoFileLinkData {
     // Removed mediaUrl, mediaType, mime as we're fetching HTML now
 }
 
-// Interface for HTML preview data
+// Interface for API error response
+interface ErrorResponse {
+    error: string;
+}
+
+// Interface for HTML preview data from API
 interface HtmlPreviewData {
     htmlContent: string;
 }
@@ -264,7 +269,7 @@ export default function Home() {
 
            if (isMounted) {
               setIsCheckingPermission(false);
-              console.log("Finished checking permissions, determined granted state:", hasDisplayMediaPermission); // Log the final state set
+              console.log("Finished checking permissions, determined granted state:", permissionGranted); // Log the final state set
           }
 
           return () => {
@@ -566,6 +571,21 @@ export default function Home() {
     }
   };
 
+   // Function to copy text to clipboard
+   const copyToClipboard = (text: string) => {
+       if (!navigator.clipboard) {
+           sonnerToast.error("Clipboard API not available.");
+           return;
+       }
+       navigator.clipboard.writeText(text).then(() => {
+           sonnerToast.success("Copied to clipboard!");
+       }, (err) => {
+           console.error('Failed to copy text: ', err);
+           sonnerToast.error("Failed to copy.");
+       });
+   };
+
+
   // --- Preview Modal ---
     const openPreviewModal = async (gofilePageUrl: string, linkFilename: string) => {
         if (isLoadingPreview) return; // Prevent multiple fetches
@@ -670,20 +690,6 @@ export default function Home() {
    };
 
   const buttonState = getButtonState();
-
-   // Function to copy link to clipboard
-   const copyToClipboard = (text: string) => {
-       if (!navigator.clipboard) {
-           sonnerToast.error("Clipboard API not available.");
-           return;
-       }
-       navigator.clipboard.writeText(text).then(() => {
-           sonnerToast.success("Link copied to clipboard!");
-       }, (err) => {
-           console.error('Failed to copy text: ', err);
-           sonnerToast.error("Failed to copy link.");
-       });
-   };
 
 
   return (
@@ -926,7 +932,18 @@ export default function Home() {
 
             {/* HTML Content Area */}
             {!isLoadingPreview && !previewError && previewHtml && (
-                 <ScrollArea className="flex-grow border-t border-border">
+                 <ScrollArea className="flex-grow border-t border-border relative"> {/* Make ScrollArea relative */}
+                   {/* Copy Button positioned absolutely inside ScrollArea */}
+                   <Button
+                     variant="outline"
+                     size="icon"
+                     className="absolute top-2 right-2 z-10 h-7 w-7"
+                     onClick={() => copyToClipboard(previewHtml)}
+                     title="Copy HTML"
+                   >
+                     <Copy className="h-4 w-4" />
+                     <span className="sr-only">Copy HTML</span>
+                   </Button>
                     <pre className="text-xs p-4 whitespace-pre-wrap break-all">
                         <code>
                             {previewHtml}
