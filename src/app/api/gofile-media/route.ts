@@ -8,12 +8,22 @@ import * as cheerio from 'cheerio';
 
 export async function POST(request: Request) {
   let fromBuffer: any; // Declare variable for dynamic import
+  let requestBody: { url?: string } = {}; // To store the parsed request body
+
   try {
     // Dynamically import 'file-type'
     const fileTypeModule = await import('file-type');
     fromBuffer = fileTypeModule.fromBuffer;
 
-    const { url } = await request.json();
+    // Try parsing request body early to use in error handling
+    try {
+        requestBody = await request.json();
+    } catch (parseError) {
+        console.error('[API /gofile-media] Error parsing request JSON:', parseError);
+        return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+    }
+
+    const { url } = requestBody;
 
     if (!url || !url.includes('gofile.io/d/')) {
       return NextResponse.json({ error: 'Invalid Gofile URL' }, { status: 400 });
@@ -98,9 +108,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ downloadLink, mediaType, mime: fileType.mime });
 
   } catch (error: any) {
+    // Use the url from the request body captured earlier, or fallback to axios config url, or 'Unknown URL'
+    // Removed invalid 'rescue null' syntax here
+    const originalUrl = requestBody?.url || error.config?.url || 'Unknown URL';
     console.error('[API /gofile-media] Error fetching media:', {
         message: error.message,
-        url: (error.config?.url || (await request.json()).url rescue null), // Log requested URL if available
+        url: originalUrl, // Use the captured/fallback URL
         status: error.response?.status,
         code: error.code,
     });
