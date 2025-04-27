@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableCaption } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog"; // Import Dialog components
+import { ScrollArea } from "@/components/ui/scroll-area"; // Import ScrollArea
 import { toast as sonnerToast } from 'sonner'; // Import Sonner Toaster directly
 import { cn } from "@/lib/utils";
 import { uploadToGoFile } from "@/services/gofile"; // Import the GoFile service
@@ -97,7 +98,8 @@ export default function Home() {
   const [isCheckingPermission, setIsCheckingPermission] = useState(true);
 
   // State for Preview Modal
-  const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
+  const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null); // Keep for potential future use
+  const [previewHtmlContent, setPreviewHtmlContent] = useState<string | null>(null); // State for HTML content
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [loadingPreviewUrl, setLoadingPreviewUrl] = useState<string | null>(null); // Track which link is loading
@@ -553,23 +555,23 @@ export default function Home() {
     const openPreviewModal = async (gofileUrl: string, linkFilename: string) => {
         if (isLoadingPreview) return; // Prevent multiple fetches
 
-        console.log("Attempting to open preview for:", gofileUrl);
+        console.log("Attempting to open HTML preview for:", gofileUrl);
         setLoadingPreviewUrl(gofileUrl); // Track which link is loading
         setIsLoadingPreview(true);
-        setPreviewVideoUrl(null); // Clear previous preview
+        setPreviewVideoUrl(null); // Clear video preview (if any)
+        setPreviewHtmlContent(null); // Clear previous HTML
         setIsPreviewModalOpen(true); // Open modal immediately to show loader
 
         try {
-            // Call the API route to get the actual media URL
+            // Call the API route to get the HTML content
             const response = await fetch(`/api/download?url=${encodeURIComponent(gofileUrl)}`);
 
             if (!response.ok) {
-                let errorMessage = `Failed to fetch preview data (status ${response.status})`;
+                let errorMessage = `Failed to fetch HTML data (status ${response.status})`;
                  try {
                     const errorData = await response.json();
                     errorMessage = errorData.error || errorMessage;
                  } catch (e) {
-                    // If the error response is not JSON, try to read as text
                     try {
                         const errorText = await response.text();
                         errorMessage = errorText || errorMessage;
@@ -581,15 +583,17 @@ export default function Home() {
                 throw new Error(errorMessage);
             }
 
-            // Get the media blob from the response
-            const blob = await response.blob();
-            const mediaUrl = URL.createObjectURL(blob);
-            setPreviewVideoUrl(mediaUrl);
-            console.log("Preview media URL obtained:", mediaUrl);
+            // Get the HTML content from the JSON response
+            const data = await response.json();
+            if (!data.html) {
+                throw new Error("API response did not contain HTML content.");
+            }
+            setPreviewHtmlContent(data.html);
+            console.log("Preview HTML content obtained.");
 
         } catch (error: any) {
-            console.error("Error fetching preview:", error);
-            sonnerToast.error("Preview Failed", { description: error.message || "Could not load video preview." });
+            console.error("Error fetching preview HTML:", error);
+            sonnerToast.error("Preview Failed", { description: error.message || "Could not load HTML preview." });
             setIsPreviewModalOpen(false); // Close modal on error
         } finally {
             setIsLoadingPreview(false);
@@ -843,6 +847,7 @@ export default function Home() {
                                             {isLoadingPreview && loadingPreviewUrl === link.url ? (
                                                 <Loader2 className="h-4 w-4 animate-spin" />
                                             ) : (
+                                                // Using PlayCircle for HTML preview for now
                                                 <PlayCircle className="h-5 w-5 text-muted-foreground hover:text-accent" />
                                             )}
                                             <span className="sr-only">Preview Media</span>
@@ -890,31 +895,29 @@ export default function Home() {
 
         {/* Preview Modal */}
         <Dialog open={isPreviewModalOpen} onOpenChange={setIsPreviewModalOpen}>
-          <DialogContent className="sm:max-w-[70vw] max-h-[90vh] flex flex-col"> {/* Adjusted width and height */}
+          <DialogContent className="sm:max-w-[80vw] max-h-[90vh] flex flex-col"> {/* Increased width */}
             <DialogHeader>
-              <DialogTitle>Media Preview</DialogTitle>
-              <DialogDescription>Playing media fetched from GoFile.</DialogDescription>
+              <DialogTitle>HTML Preview</DialogTitle>
+              <DialogDescription>Raw HTML content fetched from GoFile page for debugging.</DialogDescription>
             </DialogHeader>
-            <div className="flex-grow flex items-center justify-center overflow-hidden"> {/* Center content and allow growth */}
+            <div className="flex-grow flex items-center justify-center overflow-hidden p-2 border border-border rounded-md bg-muted/30">
               {isLoadingPreview && (
                 <div className="flex flex-col items-center justify-center h-full">
                   <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  <p className="mt-2 text-muted-foreground">Loading preview...</p>
+                  <p className="mt-2 text-muted-foreground">Loading HTML preview...</p>
                 </div>
               )}
-              {!isLoadingPreview && previewVideoUrl && (
-                <video
-                  src={previewVideoUrl}
-                  controls
-                  autoPlay
-                  className="max-w-full max-h-[calc(90vh-150px)] rounded-md border border-border" // Limit video size within modal
-                  key={previewVideoUrl} // Force re-render on URL change
-                />
+              {!isLoadingPreview && previewHtmlContent && (
+                 <ScrollArea className="h-[calc(90vh-180px)] w-full"> {/* Scroll area for potentially long HTML */}
+                   <pre className="text-xs whitespace-pre-wrap break-all p-4 bg-background rounded-md border border-input">
+                     <code>{previewHtmlContent}</code>
+                   </pre>
+                 </ScrollArea>
               )}
-               {!isLoadingPreview && !previewVideoUrl && (
+               {!isLoadingPreview && !previewHtmlContent && (
                  <div className="flex flex-col items-center justify-center h-full text-destructive">
-                   <Video className="h-8 w-8 mb-2" />
-                   <p>Failed to load preview.</p>
+                   <Video className="h-8 w-8 mb-2" /> {/* Keep Video icon for now */}
+                   <p>Failed to load HTML preview.</p>
                  </div>
                )}
             </div>
